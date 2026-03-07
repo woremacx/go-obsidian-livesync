@@ -20,7 +20,7 @@ func main() {
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
 	vaultFlag := flag.String("vault", "./vault", "Output vault directory")
-	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
+	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace (default: info only)")
@@ -40,6 +40,10 @@ func main() {
 
 	if *urlFlag == "" || *dbFlag == "" || *userFlag == "" || *passFlag == "" {
 		logw.Fatalf("--url, --db, --user, and --pass flags are required")
+	}
+
+	if *dataFlag == "" {
+		*dataFlag = "." + *dbFlag + ".db"
 	}
 
 	// Open SQLite store

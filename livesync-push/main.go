@@ -21,7 +21,7 @@ func main() {
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
 	vaultFlag := flag.String("vault", "./vault", "Vault directory to push")
-	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
+	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
 	forceFlag := flag.Bool("force", false, "Force content hash comparison for all files")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
 	dryRunFlag := flag.Bool("dry-run", false, "Detect changes without pushing")
@@ -41,6 +41,10 @@ func main() {
 
 	if *urlFlag == "" || *dbFlag == "" || *userFlag == "" || *passFlag == "" {
 		logw.Fatalf("--url, --db, --user, and --pass flags are required")
+	}
+
+	if *dataFlag == "" {
+		*dataFlag = "." + *dbFlag + ".db"
 	}
 
 	// Open SQLite store
