@@ -59,11 +59,47 @@ LIVESYNC_PASSPHRASE="your-passphrase" \
 | `--dry-run` | 変更検出のみ (プッシュしない) |
 | `-v` | ログ詳細度: `debug` または `trace` |
 
+### livesync-sync
+
+CouchDB とローカル Vault を双方向で常時同期します。CouchDB の変更は longpoll で監視、ローカルファイルの変更は fsnotify (inotify/kqueue) で検知します。
+
+```sh
+LIVESYNC_PASSPHRASE="your-passphrase" \
+  go run ./cmd/livesync-sync \
+    --url https://couchdb.example.com \
+    --db obsidian \
+    --user admin \
+    --pass secret \
+    --vault ./vault
+```
+
+| フラグ | 説明 |
+|---|---|
+| `--url` | CouchDB URL |
+| `--db` | データベース名 |
+| `--user` | CouchDB ユーザー名 |
+| `--pass` | CouchDB パスワード |
+| `--vault` | Vault ディレクトリ (デフォルト: `./vault`) |
+| `--data` | SQLite ファイルパス (デフォルト: `.<db>.db`) |
+| `--dynamic-iter` | V1 暗号化の動的イテレーションカウントを使用 |
+| `-v` | ログ詳細度: `debug` または `trace` |
+
+起動すると以下が行われます:
+
+1. CouchDB から未取得の変更を一括 pull
+2. ローカルの未 push 変更を一括 push
+3. 以降、pull (longpoll) と push (fsnotify) が並列で動作
+
+pull と push は mutex で排他制御されており、pull がファイルを書き込むと vault_files テーブルも同時に更新されるため、push 側がそれを再検知することはありません。
+
+Ctrl+C で停止します。
+
 ## ビルド
 
 ```sh
 go build -o livesync-pull ./cmd/livesync-pull
 go build -o livesync-push ./cmd/livesync-push
+go build -o livesync-sync ./cmd/livesync-sync
 ```
 
 ## テスト
