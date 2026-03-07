@@ -21,6 +21,7 @@ func main() {
 	vaultFlag := flag.String("vault", "./vault", "Output vault directory")
 	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
+	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
 	flag.Parse()
 
 	passphrase := os.Getenv("LIVESYNC_PASSPHRASE")
@@ -54,13 +55,13 @@ func main() {
 	}
 
 	// Step 3: Materialize
-	stats, err := vault.Materialize(store, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
+	stats, err := vault.Materialize(store, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag, *fullFlag)
 	if err != nil {
 		log.Fatalf("materialize: %v", err)
 	}
 
-	fmt.Printf("Done: %d written, %d deleted, %d skipped, %d errors\n",
-		stats.Written, stats.Deleted, stats.Skipped, stats.Errors)
+	fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
+		stats.Written, stats.Unchanged, stats.Deleted, stats.Skipped, stats.Errors)
 }
 
 func replicate(client *couchdb.Client, store *localdb.Store) error {

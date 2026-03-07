@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,20 +18,31 @@ import (
 
 // Stats tracks materialization results.
 type Stats struct {
-	Written int
-	Deleted int
-	Skipped int
-	Errors  int
+	Written   int
+	Deleted   int
+	Skipped   int
+	Errors    int
+	Unchanged int
 }
 
 // Materialize reads all documents from the store and writes files to vaultPath.
-func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (*Stats, error) {
+// If fullRebuild is false, unchanged files (same rev) are skipped.
+func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt []byte, dynamicIter, fullRebuild bool) (*Stats, error) {
 	docs, err := store.GetAllDocs()
 	if err != nil {
 		return nil, fmt.Errorf("get all docs: %w", err)
 	}
 
 	log.Printf("[materialize] total docs from SQLite: %d", len(docs))
+
+	var vaultFiles map[string]localdb.VaultFileRecord
+	if !fullRebuild {
+		vaultFiles, err = store.GetVaultFiles()
+		if err != nil {
+			return nil, fmt.Errorf("get vault files: %w", err)
+		}
+		log.Printf("[materialize] tracked vault files: %d", len(vaultFiles))
+	}
 
 	stats := &Stats{}
 
@@ -84,10 +97,19 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 					log.Printf("WARN: delete %s: %v", filePath, err)
 					stats.Errors++
 				} else {
+					store.DeleteVaultFile(filePath)
 					stats.Deleted++
 				}
 			}
 			continue
+		}
+
+		// Skip unchanged files (rev matches)
+		if vaultFiles != nil {
+			if rec, ok := vaultFiles[filePath]; ok && rec.Rev == row.Rev {
+				stats.Unchanged++
+				continue
+			}
 		}
 
 		// Reconstruct content
@@ -144,12 +166,24 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		}
 
 		// Set mtime if available
+		var fileMtime int64
 		if meta != nil && meta.MTime > 0 {
 			t := time.UnixMilli(meta.MTime)
 			os.Chtimes(fullPath, t, t)
+			fileMtime = meta.MTime
 		} else if doc.MTime > 0 {
 			t := time.UnixMilli(doc.MTime)
 			os.Chtimes(fullPath, t, t)
+			fileMtime = doc.MTime
+		} else {
+			fileMtime = time.Now().UnixMilli()
+		}
+
+		// Track in vault_files
+		h := sha256.Sum256(fileData)
+		contentHash := hex.EncodeToString(h[:])
+		if err := store.UpsertVaultFile(filePath, row.ID, row.Rev, contentHash, fileMtime, int64(len(fileData))); err != nil {
+			log.Printf("WARN: vault_files upsert %s: %v", filePath, err)
 		}
 
 		stats.Written++

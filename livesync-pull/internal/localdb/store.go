@@ -39,6 +39,14 @@ func (s *Store) init() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS vault_files (
+			path TEXT PRIMARY KEY,
+			doc_id TEXT NOT NULL,
+			rev TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			mtime INTEGER NOT NULL,
+			size INTEGER NOT NULL
+		);
 	`)
 	return err
 }
@@ -154,6 +162,50 @@ func (s *Store) CountNonDeletedDocs() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM documents WHERE deleted = 0").Scan(&count)
 	return count, err
+}
+
+// VaultFileRecord represents a tracked file in the vault.
+type VaultFileRecord struct {
+	Path        string
+	DocID       string
+	Rev         string
+	ContentHash string
+	MTime       int64
+	Size        int64
+}
+
+// GetVaultFiles returns all vault file records as a map keyed by path.
+func (s *Store) GetVaultFiles() (map[string]VaultFileRecord, error) {
+	rows, err := s.db.Query("SELECT path, doc_id, rev, content_hash, mtime, size FROM vault_files")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]VaultFileRecord)
+	for rows.Next() {
+		var r VaultFileRecord
+		if err := rows.Scan(&r.Path, &r.DocID, &r.Rev, &r.ContentHash, &r.MTime, &r.Size); err != nil {
+			return nil, err
+		}
+		result[r.Path] = r
+	}
+	return result, rows.Err()
+}
+
+// UpsertVaultFile inserts or updates a vault file record.
+func (s *Store) UpsertVaultFile(path, docID, rev, contentHash string, mtime, size int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO vault_files (path, doc_id, rev, content_hash, mtime, size) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(path) DO UPDATE SET doc_id=excluded.doc_id, rev=excluded.rev, content_hash=excluded.content_hash, mtime=excluded.mtime, size=excluded.size`,
+		path, docID, rev, contentHash, mtime, size,
+	)
+	return err
+}
+
+// DeleteVaultFile removes a vault file record.
+func (s *Store) DeleteVaultFile(path string) error {
+	_, err := s.db.Exec("DELETE FROM vault_files WHERE path = ?", path)
+	return err
 }
 
 // BeginTx starts a transaction and returns a TxStore for batch operations.
