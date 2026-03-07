@@ -180,7 +180,7 @@ func TestRoundtripDetectAndPush(t *testing.T) {
 	}
 
 	// Detect changes (all should be "create" since vault_files is empty)
-	changes, err := push.DetectChanges(store, srcDir, false)
+	changes, err := push.DetectChanges(store, srcDir)
 	if err != nil {
 		t.Fatalf("detect: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRoundtripDetectAndPush(t *testing.T) {
 	}
 
 	// Detect again — should find no changes since vault_files is now populated
-	changes2, err := push.DetectChanges(store, srcDir, false)
+	changes2, err := push.DetectChanges(store, srcDir)
 	if err != nil {
 		t.Fatalf("detect after push: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRoundtripDetectAndPush(t *testing.T) {
 	delete(files, "c.md")
 
 	// Detect changes — should find 1 update + 1 delete
-	changes3, err := push.DetectChanges(store, srcDir, false)
+	changes3, err := push.DetectChanges(store, srcDir)
 	if err != nil {
 		t.Fatalf("detect after modify: %v", err)
 	}

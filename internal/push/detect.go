@@ -12,6 +12,12 @@ import (
 	"github.com/woremacx/go-obsidian-livesync/internal/logw"
 )
 
+type mtimeUpdate struct {
+	path  string
+	mtime int64
+	size  int64
+}
+
 type ChangedFile struct {
 	Path    string // vault-relative path
 	Action  string // "create", "update", "delete"
@@ -20,8 +26,9 @@ type ChangedFile struct {
 }
 
 // DetectChanges compares the vault directory against the vault_files table
-// and returns a list of changed files.
-func DetectChanges(store *localdb.Store, vaultPath string, forceContentHash bool) ([]ChangedFile, error) {
+// and returns a list of changed files. It always uses content hash comparison
+// to reliably detect real changes and prevent echo loops.
+func DetectChanges(store *localdb.Store, vaultPath string) ([]ChangedFile, error) {
 	tracked, err := store.GetVaultFiles()
 	if err != nil {
 		return nil, err
@@ -29,6 +36,7 @@ func DetectChanges(store *localdb.Store, vaultPath string, forceContentHash bool
 
 	seen := make(map[string]bool)
 	var changes []ChangedFile
+	var mtimeUpdates []mtimeUpdate
 
 	err = filepath.Walk(vaultPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -67,24 +75,13 @@ func DetectChanges(store *localdb.Store, vaultPath string, forceContentHash bool
 			return nil
 		}
 
-		// Check mtime and size
+		// Fast path: mtime and size unchanged — skip hash computation
 		mtime := info.ModTime().UnixMilli()
-		if rec.MTime == mtime && rec.Size == info.Size() && !forceContentHash {
+		if rec.MTime == mtime && rec.Size == info.Size() {
 			return nil
 		}
 
-		// Content hash comparison for potential updates
-		if forceContentHash || rec.Size != info.Size() {
-			changes = append(changes, ChangedFile{
-				Path:    relPath,
-				Action:  "update",
-				Size:    info.Size(),
-				ModTime: info.ModTime(),
-			})
-			return nil
-		}
-
-		// mtime differs but size same — check content hash
+		// mtime or size changed — compute content hash to check for real change
 		data, err := os.ReadFile(path)
 		if err != nil {
 			logw.Warnf("read %s for hash: %v", relPath, err)
@@ -92,14 +89,20 @@ func DetectChanges(store *localdb.Store, vaultPath string, forceContentHash bool
 		}
 		h := sha256.Sum256(data)
 		contentHash := hex.EncodeToString(h[:])
-		if contentHash != rec.ContentHash {
-			changes = append(changes, ChangedFile{
-				Path:    relPath,
-				Action:  "update",
-				Size:    info.Size(),
-				ModTime: info.ModTime(),
-			})
+
+		if contentHash == rec.ContentHash {
+			// Content identical — just update mtime/size metadata
+			mtimeUpdates = append(mtimeUpdates, mtimeUpdate{path: relPath, mtime: mtime, size: info.Size()})
+			return nil
 		}
+
+		// Hash differs — real change
+		changes = append(changes, ChangedFile{
+			Path:    relPath,
+			Action:  "update",
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		})
 		return nil
 	})
 	if err != nil {
@@ -114,6 +117,12 @@ func DetectChanges(store *localdb.Store, vaultPath string, forceContentHash bool
 				Action: "delete",
 			})
 		}
+	}
+
+	// Update mtime/size for files whose content hash matched
+	for _, u := range mtimeUpdates {
+		rec := tracked[u.path]
+		store.UpsertVaultFile(u.path, rec.DocID, rec.Rev, rec.ContentHash, u.mtime, u.size)
 	}
 
 	return changes, nil

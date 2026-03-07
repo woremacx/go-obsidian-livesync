@@ -22,7 +22,7 @@ func main() {
 	dbFlag := flag.String("db", "", "CouchDB database name")
 	vaultFlag := flag.String("vault", "", "Vault directory to push (default: <db>)")
 	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
-	forceFlag := flag.Bool("force", false, "Force content hash comparison for all files")
+	forceFlag := flag.Bool("force", false, "Force re-push all files (clears tracking state)")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
 	dryRunFlag := flag.Bool("dry-run", false, "Detect changes without pushing")
 	flag.Parse()
@@ -73,9 +73,21 @@ func main() {
 		logw.Fatalf("replicate: %v", err)
 	}
 
+	// Force mode: clear vault_files so all files are detected as "create"
+	if *forceFlag {
+		vf, err := store.GetVaultFiles()
+		if err != nil {
+			logw.Fatalf("get vault files: %v", err)
+		}
+		for path := range vf {
+			store.DeleteVaultFile(path)
+		}
+		logw.Infof("Force mode: cleared %d tracked files", len(vf))
+	}
+
 	// Detect changes
 	t0 := time.Now()
-	changes, err := push.DetectChanges(store, *vaultFlag, *forceFlag)
+	changes, err := push.DetectChanges(store, *vaultFlag)
 	if err != nil {
 		logw.Fatalf("detect changes: %v", err)
 	}

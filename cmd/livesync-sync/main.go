@@ -278,7 +278,7 @@ func pushLoop(client *couchdb.Client, store *localdb.Store,
 func pushChanged(client *couchdb.Client, store *localdb.Store,
 	vaultPath, passphrase string, pbkdf2Salt []byte, paths []string) {
 
-	changes, err := push.DetectChanges(store, vaultPath, false)
+	changes, err := push.DetectChanges(store, vaultPath)
 	if err != nil {
 		logw.Warnf("[push] detect changes: %v", err)
 		return
@@ -328,7 +328,7 @@ func pushChanged(client *couchdb.Client, store *localdb.Store,
 func pushAll(client *couchdb.Client, store *localdb.Store,
 	vaultPath, passphrase string, pbkdf2Salt []byte) {
 
-	changes, err := push.DetectChanges(store, vaultPath, false)
+	changes, err := push.DetectChanges(store, vaultPath)
 	if err != nil {
 		logw.Warnf("[push] detect changes: %v", err)
 		return
