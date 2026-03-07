@@ -172,3 +172,41 @@ func (c *Client) GetChanges(since string, limit int) (*ChangesResponse, error) {
 	}
 	return &resp, nil
 }
+
+// GetChangesLongPoll uses feed=longpoll to wait for changes from CouchDB.
+// It blocks until at least one change is available or the heartbeat interval passes.
+// heartbeatMs is the heartbeat interval in milliseconds (e.g. 30000).
+func (c *Client) GetChangesLongPoll(since string, heartbeatMs int) (*ChangesResponse, error) {
+	params := url.Values{}
+	params.Set("since", since)
+	params.Set("include_docs", "true")
+	params.Set("feed", "longpoll")
+	params.Set("heartbeat", fmt.Sprintf("%d", heartbeatMs))
+	u := fmt.Sprintf("%s/%s/_changes?%s", c.baseURL, c.db, params.Encode())
+
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.user, c.password)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("longpoll changes: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read longpoll response: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("longpoll _changes returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result ChangesResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse longpoll changes: %w", err)
+	}
+	return &result, nil
+}

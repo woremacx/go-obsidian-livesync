@@ -23,6 +23,7 @@ func main() {
 	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
+	watchFlag := flag.Bool("watch", false, "Watch for changes continuously using CouchDB longpoll")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace (default: info only)")
 	flag.Parse()
 
@@ -81,7 +82,6 @@ func main() {
 	case materializedSeq == postSeq:
 		// Already fully materialized
 		fmt.Println("Nothing to materialize")
-		return
 	case materializedSeq == preSeq && len(changedIDs) > 0:
 		// Previous materialize completed, only process this run's changes
 		docs, err = store.GetDocsByIDs(changedIDs)
@@ -107,19 +107,102 @@ func main() {
 
 	logw.Debugf("doc selection took %v", time.Since(t0))
 
-	// Step 4: Materialize
-	stats, err := vault.Materialize(store, docs, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
-	if err != nil {
-		logw.Fatalf("materialize: %v", err)
+	if len(docs) > 0 {
+		// Step 4: Materialize
+		stats, err := vault.Materialize(store, docs, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
+		if err != nil {
+			logw.Fatalf("materialize: %v", err)
+		}
+
+		// Step 5: Record successful materialization seq
+		if err := store.SetMeta("last_materialized_seq", postSeq); err != nil {
+			logw.Warnf("save last_materialized_seq: %v", err)
+		}
+
+		fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
+			stats.Written, stats.Unchanged, stats.Deleted, stats.Skipped, stats.Errors)
 	}
 
-	// Step 5: Record successful materialization seq
-	if err := store.SetMeta("last_materialized_seq", postSeq); err != nil {
-		logw.Warnf("save last_materialized_seq: %v", err)
+	if !*watchFlag {
+		return
 	}
 
-	fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
-		stats.Written, stats.Unchanged, stats.Deleted, stats.Skipped, stats.Errors)
+	// Watch mode: longpoll loop
+	fmt.Println("Watching for changes...")
+	for {
+		since, _ := store.GetLastSeq()
+		resp, err := client.GetChangesLongPoll(since, 30000)
+		if err != nil {
+			logw.Warnf("longpoll error: %v (retrying in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		if len(resp.Results) == 0 {
+			continue
+		}
+
+		// Save changes to SQLite
+		var changedIDs []string
+		tx, err := store.BeginTx()
+		if err != nil {
+			logw.Warnf("begin tx: %v (retrying in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if err := tx.Prepare(); err != nil {
+			tx.Rollback()
+			logw.Warnf("prepare tx: %v (retrying in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		for _, result := range resp.Results {
+			rev := ""
+			if len(result.Changes) > 0 {
+				rev = result.Changes[0].Rev
+			}
+			if err := tx.UpsertDoc(result.ID, rev, json.RawMessage(result.Doc), result.Deleted); err != nil {
+				tx.Rollback()
+				logw.Warnf("upsert %s: %v (retrying in 5s)", result.ID, err)
+				break
+			}
+			changedIDs = append(changedIDs, result.ID)
+		}
+
+		if err := tx.Commit(); err != nil {
+			logw.Warnf("commit: %v (retrying in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		if err := store.SetLastSeq(string(resp.LastSeq)); err != nil {
+			logw.Warnf("set last seq: %v", err)
+		}
+
+		logw.Infof("Received %d changes", len(changedIDs))
+
+		// Materialize changed docs
+		docs, err := store.GetDocsByIDs(changedIDs)
+		if err != nil {
+			logw.Warnf("get docs by IDs: %v", err)
+			continue
+		}
+
+		wStats, err := vault.Materialize(store, docs, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
+		if err != nil {
+			logw.Warnf("materialize: %v", err)
+			continue
+		}
+
+		postSeq, _ := store.GetLastSeq()
+		if err := store.SetMeta("last_materialized_seq", postSeq); err != nil {
+			logw.Warnf("save last_materialized_seq: %v", err)
+		}
+
+		fmt.Printf("Watch: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
+			wStats.Written, wStats.Unchanged, wStats.Deleted, wStats.Skipped, wStats.Errors)
+	}
 }
 
 func replicate(client *couchdb.Client, store *localdb.Store) ([]string, error) {

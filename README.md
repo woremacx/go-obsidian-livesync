@@ -29,6 +29,7 @@ LIVESYNC_PASSPHRASE="your-passphrase" \
 | `--vault` | 出力 Vault ディレクトリ (デフォルト: `./vault`) |
 | `--data` | SQLite ファイルパス (デフォルト: `.<db>.db`) |
 | `--full` | インクリメンタル検出をスキップして全ファイルを再構築 |
+| `--watch` | CouchDB の変更を longpoll で監視し、継続的に Vault を更新 |
 | `--dynamic-iter` | V1 暗号化の動的イテレーションカウントを使用 |
 | `-v` | ログ詳細度: `debug` または `trace` |
 
