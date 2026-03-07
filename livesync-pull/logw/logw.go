@@ -23,6 +23,10 @@ const infoPrefix = "[INFO] "
 
 var logLevel = LogWrapInfo
 
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+}
+
 func SetLevel(level LogWrapType) {
 	logLevel = level
 }
