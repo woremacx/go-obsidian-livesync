@@ -3,6 +3,7 @@ package vault
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -47,10 +48,14 @@ func DecodeBinary(data string) ([]byte, error) {
 		return nil, nil
 	}
 	if strings.HasPrefix(data, "%") {
+		log.Printf("      [binary] legacy UTF-16 decode, data_len=%d", len(data))
 		return decodeLegacyUTF16(data[1:]), nil
 	}
+	log.Printf("      [binary] base64 decode, data_len=%d, first_40=%q, last_40=%q",
+		len(data), truncBinStr(data, 40), truncBinStrTail(data, 40))
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
+		log.Printf("      [binary] StdEncoding failed: %v, trying RawStdEncoding", err)
 		decoded, err = base64.RawStdEncoding.DecodeString(data)
 		if err != nil {
 			return nil, fmt.Errorf("base64 decode binary: %w", err)
@@ -67,4 +72,18 @@ func IsPlainText(filename string) bool {
 		}
 	}
 	return false
+}
+
+func truncBinStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func truncBinStrTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }

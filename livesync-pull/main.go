@@ -20,7 +20,7 @@ func main() {
 	dbFlag := flag.String("db", "", "CouchDB database name")
 	vaultFlag := flag.String("vault", "./vault", "Output vault directory")
 	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
-	dynamicIterFlag := flag.Bool("dynamic-iter", true, "Use dynamic iteration count for V1 encryption")
+	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	flag.Parse()
 
 	passphrase := os.Getenv("LIVESYNC_PASSPHRASE")

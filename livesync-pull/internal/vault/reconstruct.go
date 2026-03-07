@@ -29,11 +29,14 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		return nil, fmt.Errorf("get all docs: %w", err)
 	}
 
+	log.Printf("[materialize] total docs from SQLite: %d", len(docs))
+
 	stats := &Stats{}
 
 	for _, row := range docs {
 		var doc types.EntryDoc
 		if err := json.Unmarshal(row.Doc, &doc); err != nil {
+			log.Printf("[DEBUG] id=%s: JSON unmarshal failed: %v (raw first 200 chars: %s)", row.ID, err, truncStr(string(row.Doc), 200))
 			stats.Errors++
 			continue
 		}
@@ -46,20 +49,27 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 			continue
 		}
 
+		log.Printf("[DEBUG] id=%s type=%s path_len=%d path_prefix=%q children=%d encrypted=%v",
+			row.ID, doc.Type, len(doc.Path), truncStr(doc.Path, 40), len(doc.Children), doc.Encrypted)
+
 		// Resolve path
 		filePath, meta, err := resolvePath(doc, passphrase, pbkdf2Salt, dynamicIter)
 		if err != nil {
-			log.Printf("WARN: skip %s: path resolve: %v", row.ID, err)
+			log.Printf("WARN: skip id=%s type=%s: path resolve failed: %v", row.ID, doc.Type, err)
+			log.Printf("  [DEBUG] path raw (first 100): %q", truncStr(doc.Path, 100))
+			log.Printf("  [DEBUG] path bytes (first 20): %x", []byte(doc.Path)[:min(20, len(doc.Path))])
 			stats.Errors++
 			continue
 		}
 		if filePath == "" {
+			log.Printf("[DEBUG] id=%s: resolvePath returned empty, skipping", row.ID)
 			stats.Skipped++
 			continue
 		}
 
 		// Override children from encrypted metadata if available
 		if meta != nil && len(meta.Children) > 0 {
+			log.Printf("[DEBUG] id=%s: overriding children from metadata: %d -> %d", row.ID, len(doc.Children), len(meta.Children))
 			doc.Children = meta.Children
 		}
 
@@ -81,23 +91,47 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		}
 
 		// Reconstruct content
-		content, err := reconstructContent(store, doc, passphrase, pbkdf2Salt, dynamicIter)
+		content, chunkParts, err := reconstructContent(store, doc, passphrase, pbkdf2Salt, dynamicIter)
 		if err != nil {
-			log.Printf("WARN: skip %s: content: %v", filePath, err)
+			log.Printf("WARN: skip %s (id=%s): content reconstruction failed: %v", filePath, row.ID, err)
 			stats.Errors++
 			continue
 		}
+
+		log.Printf("[DEBUG] id=%s path=%s: content_len=%d isPlainText=%v chunks=%d", row.ID, filePath, len(content), IsPlainText(filePath), len(chunkParts))
 
 		// Determine if binary and decode
 		var fileData []byte
 		if IsPlainText(filePath) {
 			fileData = []byte(content)
 		} else {
-			fileData, err = DecodeBinary(content)
-			if err != nil {
-				log.Printf("WARN: skip %s: binary decode: %v", filePath, err)
-				stats.Errors++
-				continue
+			// Binary files: each chunk is independently base64-encoded,
+			// so we must decode each chunk separately then concatenate bytes.
+			if len(chunkParts) > 1 {
+				log.Printf("[DEBUG] id=%s path=%s: per-chunk binary decode (%d chunks)", row.ID, filePath, len(chunkParts))
+				var allBytes []byte
+				for ci, part := range chunkParts {
+					decoded, derr := DecodeBinary(part)
+					if derr != nil {
+						log.Printf("WARN: skip %s (id=%s): binary decode chunk[%d] failed: %v", filePath, row.ID, ci, derr)
+						err = derr
+						break
+					}
+					allBytes = append(allBytes, decoded...)
+				}
+				if err != nil {
+					stats.Errors++
+					continue
+				}
+				fileData = allBytes
+			} else {
+				log.Printf("[DEBUG] id=%s path=%s: single-chunk binary decode", row.ID, filePath)
+				fileData, err = DecodeBinary(content)
+				if err != nil {
+					log.Printf("WARN: skip %s (id=%s): binary decode failed: %v", filePath, row.ID, err)
+					stats.Errors++
+					continue
+				}
 			}
 		}
 
@@ -128,70 +162,83 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 func resolvePath(doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, *types.PathMetadata, error) {
 	path := doc.Path
 	if path == "" {
-		// Try to get path from _id (for docs without explicit path)
 		return "", nil, nil
 	}
 
+	log.Printf("  [resolvePath] id=%s checking path: isEncryptedMeta=%v isObfV2=%v isObfV1=%v",
+		doc.ID, crypto.IsEncryptedMeta(path), crypto.IsPathObfuscatedV2(path), crypto.IsPathObfuscatedV1(path))
+
 	if crypto.IsEncryptedMeta(path) {
+		log.Printf("  [resolvePath] id=%s: /\\: encrypted metadata detected, encrypted_part_prefix=%q",
+			doc.ID, truncStr(path[3:], 30))
 		meta, err := crypto.DecryptPathMeta(path, passphrase, pbkdf2Salt)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("decrypt /\\: metadata: %w", err)
 		}
+		log.Printf("  [resolvePath] id=%s: decrypted metadata: path=%q children=%d", doc.ID, meta.Path, len(meta.Children))
 		return meta.Path, meta, nil
 	}
 
 	if crypto.IsPathObfuscatedV2(path) {
-		// V2 obfuscation is one-way hash, cannot recover path without metadata
-		// The path should have been stored as /\: metadata
-		return "", nil, fmt.Errorf("V2 obfuscated path without metadata: %s", path[:min(len(path), 20)])
+		return "", nil, fmt.Errorf("V2 obfuscated path (%%/\\) without /\\: metadata: %s", truncStr(path, 30))
 	}
 
 	if crypto.IsPathObfuscatedV1(path) {
+		log.Printf("  [resolvePath] id=%s: V1 obfuscated path, len=%d, ivHex=%s, saltHex=%s",
+			doc.ID, len(path), truncStr(path[1:33], 32), truncStr(path[33:65], 32))
 		decrypted, err := crypto.DecryptObfuscatedPathV1(path, passphrase, dynamicIter)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("V1 path decrypt (len=%d, prefix=%q): %w", len(path), truncStr(path, 40), err)
 		}
+		log.Printf("  [resolvePath] id=%s: V1 path decrypted to: %q", doc.ID, decrypted)
 		return decrypted, nil, nil
 	}
 
+	log.Printf("  [resolvePath] id=%s: plain path=%q", doc.ID, truncStr(path, 60))
 	return path, nil, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // reconstructContent assembles file content from chunks or data field.
-func reconstructContent(store *localdb.Store, doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, error) {
+// Returns the joined content string and the individual chunk parts (for per-chunk binary decode).
+func reconstructContent(store *localdb.Store, doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, []string, error) {
 	if doc.Type == types.TypeNotes {
-		// notes type: data is string or string array, join directly
-		return extractDataString(doc.Data)
+		log.Printf("  [content] id=%s: notes type, extracting data field", doc.ID)
+		s, err := extractDataString(doc.Data)
+		return s, nil, err
 	}
 
 	// plain/newnote: children array contains chunk IDs
 	children := doc.Children
 	if len(children) == 0 {
-		return "", nil
+		log.Printf("  [content] id=%s: no children, returning empty", doc.ID)
+		return "", nil, nil
 	}
+
+	log.Printf("  [content] id=%s: %d children to fetch", doc.ID, len(children))
 
 	// Try to get eden for fallback
 	var eden map[string]types.EdenEntry
 	if len(doc.Eden) > 0 {
 		eden = decryptEden(doc.Eden, passphrase, pbkdf2Salt, dynamicIter)
+		if eden != nil {
+			log.Printf("  [content] id=%s: eden available with %d entries", doc.ID, len(eden))
+		}
 	}
 
 	var parts []string
-	for _, chunkID := range children {
+	for i, chunkID := range children {
 		data, err := getChunkData(store, chunkID, eden, passphrase, pbkdf2Salt, dynamicIter)
 		if err != nil {
-			return "", fmt.Errorf("chunk %s: %w", chunkID, err)
+			return "", nil, fmt.Errorf("chunk[%d] id=%s: %w", i, chunkID, err)
+		}
+		if i == 0 {
+			log.Printf("  [content] id=%s: chunk[0]=%s data_len=%d data_prefix=%q", doc.ID, chunkID, len(data), truncStr(data, 30))
 		}
 		parts = append(parts, data)
 	}
-	return strings.Join(parts, ""), nil
+	joined := strings.Join(parts, "")
+	log.Printf("  [content] id=%s: joined %d chunks, total_len=%d", doc.ID, len(parts), len(joined))
+	return joined, parts, nil
 }
 
 // extractDataString extracts the data field as a string (handles both string and string array JSON).
@@ -209,47 +256,53 @@ func extractDataString(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &arr); err == nil {
 		return strings.Join(arr, ""), nil
 	}
-	return "", fmt.Errorf("data field is neither string nor string array")
+	return "", fmt.Errorf("data field is neither string nor string array: first 100=%s", truncStr(string(raw), 100))
 }
 
 // getChunkData retrieves and optionally decrypts a chunk's data.
 func getChunkData(store *localdb.Store, chunkID string, eden map[string]types.EdenEntry, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, error) {
 	doc, err := store.GetDoc(chunkID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("db lookup error: %w", err)
 	}
 
 	if doc != nil {
-		return decryptChunkDoc(doc, passphrase, pbkdf2Salt, dynamicIter)
+		data, err := decryptChunkDoc(doc, chunkID, passphrase, pbkdf2Salt, dynamicIter)
+		if err != nil {
+			return "", fmt.Errorf("decrypt: %w", err)
+		}
+		return data, nil
 	}
 
 	// Fallback to eden
 	if eden != nil {
 		if entry, ok := eden[chunkID]; ok {
+			log.Printf("    [chunk] %s: found in eden (data_len=%d)", chunkID, len(entry.Data))
 			return entry.Data, nil
 		}
 	}
 
-	return "", fmt.Errorf("chunk not found: %s", chunkID)
+	return "", fmt.Errorf("chunk not found in DB or eden")
 }
 
 // decryptChunkDoc decrypts a chunk document's data field.
-func decryptChunkDoc(raw json.RawMessage, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, error) {
+func decryptChunkDoc(raw json.RawMessage, chunkID string, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, error) {
 	var chunk struct {
 		Data      string `json:"data"`
 		Encrypted bool   `json:"e_"`
 	}
 	if err := json.Unmarshal(raw, &chunk); err != nil {
-		return "", err
+		return "", fmt.Errorf("unmarshal chunk JSON: %w", err)
 	}
 
 	if !chunk.Encrypted {
 		return chunk.Data, nil
 	}
 
+	log.Printf("    [chunk] %s: encrypted, data_prefix=%q", chunkID, truncStr(chunk.Data, 20))
 	decrypted, err := crypto.Decrypt(chunk.Data, passphrase, pbkdf2Salt, dynamicIter)
 	if err != nil {
-		return "", fmt.Errorf("decrypt chunk: %w", err)
+		return "", fmt.Errorf("decrypt (prefix=%q): %w", truncStr(chunk.Data, 10), err)
 	}
 	return decrypted, nil
 }
@@ -258,19 +311,26 @@ func decryptChunkDoc(raw json.RawMessage, passphrase string, pbkdf2Salt []byte, 
 func decryptEden(edenRaw json.RawMessage, passphrase string, pbkdf2Salt []byte, dynamicIter bool) map[string]types.EdenEntry {
 	var edenMap map[string]json.RawMessage
 	if err := json.Unmarshal(edenRaw, &edenMap); err != nil {
+		log.Printf("    [eden] unmarshal failed: %v", err)
 		return nil
 	}
+
+	log.Printf("    [eden] keys: %v", edenKeys(edenMap))
 
 	// Check for encrypted eden
 	if encData, ok := edenMap["h:++encrypted-hkdf"]; ok {
 		var entry types.EdenEntry
 		if err := json.Unmarshal(encData, &entry); err == nil {
+			log.Printf("    [eden] decrypting h:++encrypted-hkdf, data_prefix=%q", truncStr(entry.Data, 20))
 			decrypted, err := crypto.Decrypt(entry.Data, passphrase, pbkdf2Salt, dynamicIter)
 			if err == nil {
 				var result map[string]types.EdenEntry
 				if err := json.Unmarshal([]byte(decrypted), &result); err == nil {
 					return result
 				}
+				log.Printf("    [eden] h:++encrypted-hkdf JSON parse failed: %v", err)
+			} else {
+				log.Printf("    [eden] h:++encrypted-hkdf decrypt failed: %v", err)
 			}
 		}
 	}
@@ -278,12 +338,16 @@ func decryptEden(edenRaw json.RawMessage, passphrase string, pbkdf2Salt []byte, 
 	if encData, ok := edenMap["h:++encrypted"]; ok {
 		var entry types.EdenEntry
 		if err := json.Unmarshal(encData, &entry); err == nil {
+			log.Printf("    [eden] decrypting h:++encrypted, data_prefix=%q", truncStr(entry.Data, 20))
 			decrypted, err := crypto.Decrypt(entry.Data, passphrase, pbkdf2Salt, dynamicIter)
 			if err == nil {
 				var result map[string]types.EdenEntry
 				if err := json.Unmarshal([]byte(decrypted), &result); err == nil {
 					return result
 				}
+				log.Printf("    [eden] h:++encrypted JSON parse failed: %v", err)
+			} else {
+				log.Printf("    [eden] h:++encrypted decrypt failed: %v", err)
 			}
 		}
 	}
@@ -296,6 +360,14 @@ func decryptEden(edenRaw json.RawMessage, passphrase string, pbkdf2Salt []byte, 
 	return nil
 }
 
+func edenKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // writeFile creates parent directories and writes data to file.
 func writeFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
@@ -304,3 +376,18 @@ func writeFile(path string, data []byte) error {
 	}
 	return os.WriteFile(path, data, 0644)
 }
+
+func truncStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+

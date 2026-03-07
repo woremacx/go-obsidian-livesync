@@ -6,19 +6,28 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"unicode/utf16"
 
 	"golang.org/x/crypto/pbkdf2"
 )
 
+// jsStringLength returns the JS .length of a string (UTF-16 code unit count).
+// This differs from Go's len() which counts UTF-8 bytes.
+func jsStringLength(s string) int {
+	return len(utf16.Encode([]rune(s)))
+}
+
 // v1Iterations calculates the iteration count for V1 encryption.
-// JS: passphraseLen = 15 - passphrase.length
-//     (passphraseLen > 0 ? passphraseLen : 0) * 1000 + 121 - passphraseLen
+// JS: passphraseLen = 15 - passphrase.length  (UTF-16 code units!)
+//
+//	(passphraseLen > 0 ? passphraseLen : 0) * 1000 + 121 - passphraseLen
 func v1Iterations(passphrase string, dynamic bool) int {
 	if !dynamic {
 		return 100000
 	}
-	passphraseLen := 15 - len(passphrase)
+	passphraseLen := 15 - jsStringLength(passphrase)
 	clamped := passphraseLen
 	if clamped < 0 {
 		clamped = 0
@@ -31,6 +40,7 @@ func v1Iterations(passphrase string, dynamic bool) int {
 func deriveV1Key(passphrase string, salt []byte, dynamic bool) []byte {
 	h := sha256.Sum256([]byte(passphrase))
 	iter := v1Iterations(passphrase, dynamic)
+	log.Printf("      [v1key] iterations=%d, salt_hex=%x, digest_hex=%x", iter, salt, h[:8])
 	return pbkdf2.Key(h[:], salt, iter, 32, sha256.New)
 }
 
@@ -42,6 +52,8 @@ func decryptV1Hex(data string, passphrase string, dynamic bool) (string, error) 
 	ivHex := data[1:33]
 	saltHex := data[33:65]
 	cipherB64 := data[65:]
+
+	log.Printf("      [v1hex] ivHex=%s saltHex=%s cipher_b64_len=%d", ivHex, saltHex, len(cipherB64))
 
 	iv, err := hex.DecodeString(ivHex)
 	if err != nil {
@@ -56,10 +68,18 @@ func decryptV1Hex(data string, passphrase string, dynamic bool) (string, error) 
 		return "", fmt.Errorf("V1-Hex ciphertext decode: %w", err)
 	}
 
+	log.Printf("      [v1hex] iv_len=%d salt_len=%d ciphertext_len=%d", len(iv), len(salt), len(ciphertext))
+
 	key := deriveV1Key(passphrase, salt, dynamic)
 	plaintext, err := decryptAESGCM(key, iv, ciphertext)
 	if err != nil {
-		return "", fmt.Errorf("V1-Hex decrypt: %w", err)
+		// Fallback: try opposite dynamic iteration mode
+		key2 := deriveV1Key(passphrase, salt, !dynamic)
+		plaintext2, err2 := decryptAESGCM(key2, iv, ciphertext)
+		if err2 != nil {
+			return "", fmt.Errorf("V1-Hex decrypt: %w (fallback also failed)", err)
+		}
+		return string(plaintext2), nil
 	}
 	return string(plaintext), nil
 }
@@ -77,6 +97,8 @@ func decryptV1JSON(data string, passphrase string, dynamic bool) (string, error)
 	encData := stripQuotes(parts[0])
 	ivHex := stripQuotes(parts[1])
 	saltHex := stripQuotes(parts[2])
+
+	log.Printf("      [v1json] ivHex=%s saltHex=%s enc_len=%d", ivHex, saltHex, len(encData))
 
 	iv, err := hex.DecodeString(ivHex)
 	if err != nil {
@@ -99,13 +121,19 @@ func decryptV1JSON(data string, passphrase string, dynamic bool) (string, error)
 	key := deriveV1Key(passphrase, salt, dynamic)
 	plaintext, err := decryptAESGCM(key, iv, ciphertext)
 	if err != nil {
-		return "", fmt.Errorf("V1-JSON decrypt: %w", err)
+		// Fallback: try opposite dynamic iteration mode
+		key2 := deriveV1Key(passphrase, salt, !dynamic)
+		plaintext2, err2 := decryptAESGCM(key2, iv, ciphertext)
+		if err2 != nil {
+			return "", fmt.Errorf("V1-JSON decrypt: %w (fallback also failed)", err)
+		}
+		plaintext = plaintext2
 	}
 
 	// V1-JSON wraps content in JSON.stringify, so we need to JSON.parse
 	var result string
 	if err := json.Unmarshal(plaintext, &result); err != nil {
-		return "", fmt.Errorf("V1-JSON JSON.parse: %w", err)
+		return "", fmt.Errorf("V1-JSON JSON.parse: %w (plaintext first 100: %q)", err, truncStr100(plaintext))
 	}
 	return result, nil
 }
@@ -129,4 +157,11 @@ func decodeBinaryB64(b64 string) ([]byte, error) {
 		}
 	}
 	return data, nil
+}
+
+func truncStr100(b []byte) string {
+	if len(b) <= 100 {
+		return string(b)
+	}
+	return string(b[:100])
 }
