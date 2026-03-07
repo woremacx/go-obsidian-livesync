@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Client is a CouchDB HTTP client with Basic Auth.
@@ -81,9 +82,18 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, int, 
 	return respBody, resp.StatusCode, nil
 }
 
+// escapeDocID encodes a document ID for use in URL paths.
+// url.PathEscape does not encode '+' (valid per RFC 3986), but some
+// reverse proxies (e.g. Nginx) decode '+' as space in path segments,
+// which causes HEAD/GET lookups to fail with 404.
+func escapeDocID(id string) string {
+	s := url.PathEscape(id)
+	return strings.ReplaceAll(s, "+", "%2B")
+}
+
 // GetDocRev returns the current revision of a document, or "" if not found.
 func (c *Client) GetDocRev(id string) (string, error) {
-	u := fmt.Sprintf("%s/%s/%s", c.baseURL, c.db, url.PathEscape(id))
+	u := fmt.Sprintf("%s/%s/%s", c.baseURL, c.db, escapeDocID(id))
 	req, err := http.NewRequest("HEAD", u, nil)
 	if err != nil {
 		return "", err
@@ -109,7 +119,7 @@ func (c *Client) GetDocRev(id string) (string, error) {
 
 // PutDoc creates or updates a document. The doc should include _id and optionally _rev.
 func (c *Client) PutDoc(id string, doc interface{}) (*PutResponse, error) {
-	body, status, err := c.doRequest("PUT", url.PathEscape(id), doc)
+	body, status, err := c.doRequest("PUT", escapeDocID(id), doc)
 	if err != nil {
 		return nil, err
 	}

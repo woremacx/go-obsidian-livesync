@@ -3,6 +3,7 @@ package push
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,9 +75,20 @@ func PushFile(client *couchdb.Client, store *localdb.Store, file ChangedFile,
 		if err != nil {
 			return fmt.Errorf("bulk upload leaves: %w", err)
 		}
-		for _, r := range results {
+		for i, r := range results {
 			if r.Error != "" {
-				logw.Warnf("leaf %s: %s", r.ID, r.Error)
+				if r.Error == "conflict" {
+					logw.Debugf("leaf %s: already exists", r.ID)
+				} else {
+					logw.Warnf("leaf %s: %s", r.ID, r.Error)
+				}
+				continue
+			}
+			// Store successfully created leaf in local SQLite so that
+			// materialize can find it even if the pull echo hasn't arrived yet.
+			leafJSON, _ := json.Marshal(leafDocs[i])
+			if err := store.UpsertDoc(r.ID, r.Rev, leafJSON, false); err != nil {
+				logw.Warnf("local upsert leaf %s: %v", r.ID, err)
 			}
 		}
 	}
@@ -128,6 +140,14 @@ func PushFile(client *couchdb.Client, store *localdb.Store, file ChangedFile,
 		return fmt.Errorf("put entry doc: %w", err)
 	}
 	logw.Debugf("pushed %s -> %s (rev=%s)", file.Path, docID, putResp.Rev)
+
+	// Store entry doc in local SQLite so that materialize can find it
+	// immediately, without waiting for the pull echo from CouchDB.
+	entryDoc["_rev"] = putResp.Rev
+	entryJSON, _ := json.Marshal(entryDoc)
+	if err := store.UpsertDoc(docID, putResp.Rev, entryJSON, false); err != nil {
+		logw.Warnf("local upsert entry %s: %v", docID, err)
+	}
 
 	// Update vault_files tracking
 	h := sha256.Sum256(data)
