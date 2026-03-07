@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/couchdb"
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/localdb"
@@ -51,10 +52,13 @@ func main() {
 	// Create CouchDB client
 	client := couchdb.NewClient(*urlFlag, *dbFlag, *userFlag, *passFlag)
 
-	// Step 1: Replicate
-	if err := replicate(client, store); err != nil {
+	// Step 1: Record pre-replication seq, then replicate
+	preSeq, _ := store.GetLastSeq()
+	changedIDs, err := replicate(client, store)
+	if err != nil {
 		logw.Fatalf("replicate: %v", err)
 	}
+	postSeq, _ := store.GetLastSeq()
 
 	// Step 2: Fetch sync parameters
 	pbkdf2Salt, err := fetchSyncParams(client, store)
@@ -62,27 +66,70 @@ func main() {
 		logw.Fatalf("sync params: %v", err)
 	}
 
-	// Step 3: Materialize
-	stats, err := vault.Materialize(store, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag, *fullFlag)
+	// Step 3: Determine which docs to materialize
+	materializedSeq, _ := store.GetMeta("last_materialized_seq")
+	logw.Debugf("seq check: preSeq=%s postSeq=%s materializedSeq=%s changedIDs=%d",
+		truncateSeq(preSeq), truncateSeq(postSeq), truncateSeq(materializedSeq), len(changedIDs))
+
+	var docs []localdb.DocRow
+	t0 := time.Now()
+	switch {
+	case materializedSeq == postSeq:
+		// Already fully materialized
+		fmt.Println("Nothing to materialize")
+		return
+	case materializedSeq == preSeq && len(changedIDs) > 0:
+		// Previous materialize completed, only process this run's changes
+		docs, err = store.GetDocsByIDs(changedIDs)
+		if err != nil {
+			logw.Fatalf("get docs by IDs: %v", err)
+		}
+		logw.Infof("Incremental materialization: %d changed docs", len(docs))
+	case *fullFlag:
+		// Forced full rebuild
+		docs, err = store.GetAllDocs()
+		if err != nil {
+			logw.Fatalf("get all docs: %v", err)
+		}
+		logw.Infof("Full rebuild: %d docs", len(docs))
+	default:
+		// Initial run, crash recovery, etc: only load docs that differ from vault_files
+		docs, err = store.GetChangedDocs()
+		if err != nil {
+			logw.Fatalf("get changed docs: %v", err)
+		}
+		logw.Infof("Materialization (changed only): %d docs", len(docs))
+	}
+
+	logw.Debugf("doc selection took %v", time.Since(t0))
+
+	// Step 4: Materialize
+	stats, err := vault.Materialize(store, docs, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
 	if err != nil {
 		logw.Fatalf("materialize: %v", err)
+	}
+
+	// Step 5: Record successful materialization seq
+	if err := store.SetMeta("last_materialized_seq", postSeq); err != nil {
+		logw.Warnf("save last_materialized_seq: %v", err)
 	}
 
 	fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
 		stats.Written, stats.Unchanged, stats.Deleted, stats.Skipped, stats.Errors)
 }
 
-func replicate(client *couchdb.Client, store *localdb.Store) error {
+func replicate(client *couchdb.Client, store *localdb.Store) ([]string, error) {
 	since, err := store.GetLastSeq()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	totalDocs := 0
+	var changedIDs []string
 	for {
 		resp, err := client.GetChanges(since, 500)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if len(resp.Results) == 0 {
@@ -91,11 +138,11 @@ func replicate(client *couchdb.Client, store *localdb.Store) error {
 
 		tx, err := store.BeginTx()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := tx.Prepare(); err != nil {
 			tx.Rollback()
-			return err
+			return nil, err
 		}
 
 		for _, result := range resp.Results {
@@ -105,19 +152,20 @@ func replicate(client *couchdb.Client, store *localdb.Store) error {
 			}
 			if err := tx.UpsertDoc(result.ID, rev, json.RawMessage(result.Doc), result.Deleted); err != nil {
 				tx.Rollback()
-				return fmt.Errorf("upsert %s: %w", result.ID, err)
+				return nil, fmt.Errorf("upsert %s: %w", result.ID, err)
 			}
+			changedIDs = append(changedIDs, result.ID)
 		}
 
 		if err := tx.Commit(); err != nil {
-			return err
+			return nil, err
 		}
 
 		totalDocs += len(resp.Results)
 		since = string(resp.LastSeq)
 
 		if err := store.SetLastSeq(since); err != nil {
-			return err
+			return nil, err
 		}
 
 		fmt.Printf("Replicated %d docs (seq: %s)\n", totalDocs, truncateSeq(since))
@@ -128,7 +176,7 @@ func replicate(client *couchdb.Client, store *localdb.Store) error {
 	} else {
 		fmt.Println("Already up to date")
 	}
-	return nil
+	return changedIDs, nil
 }
 
 func fetchSyncParams(client *couchdb.Client, store *localdb.Store) ([]byte, error) {

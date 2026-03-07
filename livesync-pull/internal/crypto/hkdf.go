@@ -5,7 +5,9 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"sync"
 
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
@@ -18,11 +20,25 @@ const (
 	pbkdf2Iterations = 310000
 )
 
+var (
+	masterKeyCache    []byte
+	masterKeyCacheID  string
+	masterKeyCacheMu  sync.Mutex
+)
+
 // deriveMasterKeyHKDF derives the HKDF master key from passphrase and PBKDF2 salt.
-// Returns raw key bytes (32 bytes).
+// The result is cached since passphrase+salt don't change during a run.
 func deriveMasterKeyHKDF(passphrase string, pbkdf2Salt []byte) []byte {
+	cacheID := passphrase + "|" + hex.EncodeToString(pbkdf2Salt)
+	masterKeyCacheMu.Lock()
+	defer masterKeyCacheMu.Unlock()
+	if masterKeyCacheID == cacheID && masterKeyCache != nil {
+		return masterKeyCache
+	}
 	passBytes := []byte(passphrase)
-	return pbkdf2.Key(passBytes, pbkdf2Salt, pbkdf2Iterations, 32, sha256.New)
+	masterKeyCache = pbkdf2.Key(passBytes, pbkdf2Salt, pbkdf2Iterations, 32, sha256.New)
+	masterKeyCacheID = cacheID
+	return masterKeyCache
 }
 
 // deriveChunkKey derives an AES-256 key from the master key and HKDF salt.

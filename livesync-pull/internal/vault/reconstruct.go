@@ -25,28 +25,39 @@ type Stats struct {
 	Unchanged int
 }
 
-// Materialize reads all documents from the store and writes files to vaultPath.
-// If fullRebuild is false, unchanged files (same rev) are skipped.
-func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt []byte, dynamicIter, fullRebuild bool) (*Stats, error) {
-	docs, err := store.GetAllDocs()
+// Materialize processes the given documents and writes files to vaultPath.
+// The caller is responsible for selecting which docs to pass (all docs or incremental diff).
+// Unchanged files (same rev in vault_files) are always skipped as a safety net.
+func Materialize(store *localdb.Store, docs []localdb.DocRow, vaultPath, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (*Stats, error) {
+	logw.Infof("[materialize] docs to process: %d", len(docs))
+
+	vaultFiles, err := store.GetVaultFiles()
 	if err != nil {
-		return nil, fmt.Errorf("get all docs: %w", err)
+		return nil, fmt.Errorf("get vault files: %w", err)
 	}
+	logw.Infof("[materialize] tracked vault files: %d", len(vaultFiles))
 
-	logw.Infof("[materialize] total docs from SQLite: %d", len(docs))
-
-	var vaultFiles map[string]localdb.VaultFileRecord
-	if !fullRebuild {
-		vaultFiles, err = store.GetVaultFiles()
-		if err != nil {
-			return nil, fmt.Errorf("get vault files: %w", err)
-		}
-		logw.Infof("[materialize] tracked vault files: %d", len(vaultFiles))
+	// Build doc_id→rev index for early skip (before expensive path decryption)
+	docRevIndex := make(map[string]string, len(vaultFiles))
+	for _, rec := range vaultFiles {
+		docRevIndex[rec.DocID] = rec.Rev
 	}
 
 	stats := &Stats{}
+	skippedEarly := 0
 
-	for _, row := range docs {
+	for i, row := range docs {
+		// Early skip: if doc_id+rev matches vault_files, no need to decrypt path
+		if rev, ok := docRevIndex[row.ID]; ok && rev == row.Rev && !row.Deleted {
+			stats.Unchanged++
+			skippedEarly++
+			continue
+		}
+
+		if i < 5 || i%100 == 0 {
+			logw.Debugf("[materialize] processing doc[%d/%d] id=%s (skipped_early=%d)", i, len(docs), row.ID, skippedEarly)
+		}
+
 		var doc types.EntryDoc
 		if err := json.Unmarshal(row.Doc, &doc); err != nil {
 			logw.Debugf("id=%s: JSON unmarshal failed: %v (raw first 200 chars: %s)", row.ID, err, truncStr(string(row.Doc), 200))
@@ -98,18 +109,11 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 					stats.Errors++
 				} else {
 					store.DeleteVaultFile(filePath)
+					logw.Debugf("deleted %s", filePath)
 					stats.Deleted++
 				}
 			}
 			continue
-		}
-
-		// Skip unchanged files (rev matches)
-		if vaultFiles != nil {
-			if rec, ok := vaultFiles[filePath]; ok && rec.Rev == row.Rev {
-				stats.Unchanged++
-				continue
-			}
 		}
 
 		// Reconstruct content
@@ -164,6 +168,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 			stats.Errors++
 			continue
 		}
+		logw.Debugf("wrote %s (%d bytes)", filePath, len(fileData))
 
 		// Set mtime if available
 		var fileMtime int64

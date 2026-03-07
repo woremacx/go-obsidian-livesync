@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -48,7 +49,19 @@ func (s *Store) init() error {
 			size INTEGER NOT NULL
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add doc_type column for fast filtering (migration-safe)
+	s.db.Exec(`ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_vault_files_doc_id ON vault_files(doc_id)`)
+
+	// Backfill doc_type from JSON for any rows that still have empty doc_type
+	s.db.Exec(`UPDATE documents SET doc_type = json_extract(doc, '$.type') WHERE doc_type = '' AND json_extract(doc, '$.type') IS NOT NULL`)
+
+	return nil
 }
 
 // Close closes the database.
@@ -62,10 +75,11 @@ func (s *Store) UpsertDoc(id, rev string, doc json.RawMessage, deleted bool) err
 	if deleted {
 		del = 1
 	}
+	docType := extractDocType(doc)
 	_, err := s.db.Exec(
-		`INSERT INTO documents (id, rev, doc, deleted) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET rev=excluded.rev, doc=excluded.doc, deleted=excluded.deleted`,
-		id, rev, string(doc), del,
+		`INSERT INTO documents (id, rev, doc, deleted, doc_type) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET rev=excluded.rev, doc=excluded.doc, deleted=excluded.deleted, doc_type=excluded.doc_type`,
+		id, rev, string(doc), del, docType,
 	)
 	return err
 }
@@ -150,6 +164,81 @@ func (s *Store) SetLastSeq(seq string) error {
 	return s.SetMeta("last_seq", seq)
 }
 
+// GetChangedDocs returns file documents whose rev differs from vault_files,
+// plus file documents not yet tracked in vault_files.
+// Uses the indexed doc_type column to skip chunk documents efficiently.
+func (s *Store) GetChangedDocs() ([]DocRow, error) {
+	rows, err := s.db.Query(`
+		SELECT d.id, d.rev, d.doc, d.deleted FROM documents d
+		LEFT JOIN vault_files vf ON vf.doc_id = d.id
+		WHERE (vf.doc_id IS NULL OR vf.rev != d.rev)
+		  AND d.doc_type IN ('plain', 'newnote', 'notes')
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []DocRow
+	for rows.Next() {
+		var r DocRow
+		var del int
+		var doc string
+		if err := rows.Scan(&r.ID, &r.Rev, &doc, &del); err != nil {
+			return nil, err
+		}
+		r.Doc = json.RawMessage(doc)
+		r.Deleted = del != 0
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// GetDocsByIDs returns documents matching the given IDs.
+// Batches queries in groups of 999 to respect SQLite IN clause limits.
+func (s *Store) GetDocsByIDs(ids []string) ([]DocRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	const batchSize = 999
+	var result []DocRow
+	for i := 0; i < len(ids); i += batchSize {
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+		query := fmt.Sprintf("SELECT id, rev, doc, deleted FROM documents WHERE id IN (%s)",
+			strings.Join(placeholders, ","))
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var r DocRow
+			var del int
+			var doc string
+			if err := rows.Scan(&r.ID, &r.Rev, &doc, &del); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			r.Doc = json.RawMessage(doc)
+			r.Deleted = del != 0
+			result = append(result, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
 // CountDocs returns the total number of documents.
 func (s *Store) CountDocs() (int, error) {
 	var count int
@@ -227,8 +316,8 @@ type TxStore struct {
 func (t *TxStore) Prepare() error {
 	var err error
 	t.stmt, err = t.tx.Prepare(
-		`INSERT INTO documents (id, rev, doc, deleted) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET rev=excluded.rev, doc=excluded.doc, deleted=excluded.deleted`,
+		`INSERT INTO documents (id, rev, doc, deleted, doc_type) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET rev=excluded.rev, doc=excluded.doc, deleted=excluded.deleted, doc_type=excluded.doc_type`,
 	)
 	return err
 }
@@ -242,7 +331,8 @@ func (t *TxStore) UpsertDoc(id, rev string, doc json.RawMessage, deleted bool) e
 	if deleted {
 		del = 1
 	}
-	_, err := t.stmt.Exec(id, rev, string(doc), del)
+	docType := extractDocType(doc)
+	_, err := t.stmt.Exec(id, rev, string(doc), del, docType)
 	return err
 }
 
@@ -260,4 +350,13 @@ func (t *TxStore) Rollback() error {
 		t.stmt.Close()
 	}
 	return t.tx.Rollback()
+}
+
+// extractDocType extracts the "type" field from a document's JSON without full unmarshal.
+func extractDocType(doc json.RawMessage) string {
+	var t struct {
+		Type string `json:"type"`
+	}
+	json.Unmarshal(doc, &t)
+	return t.Type
 }
