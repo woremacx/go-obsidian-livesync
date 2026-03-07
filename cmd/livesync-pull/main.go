@@ -19,7 +19,7 @@ func main() {
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
-	vaultFlag := flag.String("vault", "./vault", "Output vault directory")
+	vaultFlag := flag.String("vault", "", "Output vault directory (default: <db>)")
 	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
@@ -45,6 +45,9 @@ func main() {
 
 	if *dataFlag == "" {
 		*dataFlag = "." + *dbFlag + ".db"
+	}
+	if *vaultFlag == "" {
+		*vaultFlag = *dbFlag
 	}
 
 	// Open SQLite store

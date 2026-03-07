@@ -26,7 +26,7 @@ LIVESYNC_PASSPHRASE="your-passphrase" \
 | `--db` | データベース名 |
 | `--user` | CouchDB ユーザー名 |
 | `--pass` | CouchDB パスワード |
-| `--vault` | 出力 Vault ディレクトリ (デフォルト: `./vault`) |
+| `--vault` | 出力 Vault ディレクトリ (デフォルト: `<db>`) |
 | `--data` | SQLite ファイルパス (デフォルト: `.<db>.db`) |
 | `--full` | インクリメンタル検出をスキップして全ファイルを再構築 |
 | `--watch` | CouchDB の変更を longpoll で監視し、継続的に Vault を更新 |
@@ -53,7 +53,7 @@ LIVESYNC_PASSPHRASE="your-passphrase" \
 | `--db` | データベース名 |
 | `--user` | CouchDB ユーザー名 |
 | `--pass` | CouchDB パスワード |
-| `--vault` | Vault ディレクトリ (デフォルト: `./vault`) |
+| `--vault` | Vault ディレクトリ (デフォルト: `<db>`) |
 | `--data` | SQLite ファイルパス (デフォルト: `.<db>.db`) |
 | `--force` | 全ファイルのコンテンツハッシュを比較 |
 | `--dry-run` | 変更検出のみ (プッシュしない) |
@@ -79,7 +79,7 @@ LIVESYNC_PASSPHRASE="your-passphrase" \
 | `--db` | データベース名 |
 | `--user` | CouchDB ユーザー名 |
 | `--pass` | CouchDB パスワード |
-| `--vault` | Vault ディレクトリ (デフォルト: `./vault`) |
+| `--vault` | Vault ディレクトリ (デフォルト: `<db>`) |
 | `--data` | SQLite ファイルパス (デフォルト: `.<db>.db`) |
 | `--dynamic-iter` | V1 暗号化の動的イテレーションカウントを使用 |
 | `-v` | ログ詳細度: `debug` または `trace` |

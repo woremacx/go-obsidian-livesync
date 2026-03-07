@@ -20,7 +20,7 @@ func main() {
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
-	vaultFlag := flag.String("vault", "./vault", "Vault directory to push")
+	vaultFlag := flag.String("vault", "", "Vault directory to push (default: <db>)")
 	dataFlag := flag.String("data", "", "SQLite database path (default: <db>.db)")
 	forceFlag := flag.Bool("force", false, "Force content hash comparison for all files")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
@@ -45,6 +45,9 @@ func main() {
 
 	if *dataFlag == "" {
 		*dataFlag = "." + *dbFlag + ".db"
+	}
+	if *vaultFlag == "" {
+		*vaultFlag = *dbFlag
 	}
 
 	// Open SQLite store

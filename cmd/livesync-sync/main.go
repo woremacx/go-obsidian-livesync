@@ -27,7 +27,7 @@ func main() {
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
-	vaultFlag := flag.String("vault", "./vault", "Vault directory to sync")
+	vaultFlag := flag.String("vault", "", "Vault directory to sync (default: <db>)")
 	dataFlag := flag.String("data", "", "SQLite database path (default: .<db>.db)")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
@@ -51,6 +51,9 @@ func main() {
 
 	if *dataFlag == "" {
 		*dataFlag = "." + *dbFlag + ".db"
+	}
+	if *vaultFlag == "" {
+		*vaultFlag = *dbFlag
 	}
 
 	store, err := localdb.Open(*dataFlag)
