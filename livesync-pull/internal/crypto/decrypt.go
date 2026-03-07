@@ -2,8 +2,9 @@ package crypto
 
 import (
 	"fmt"
-	"log"
 	"strings"
+
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 )
 
 // Decrypt dispatches to the appropriate decryption function based on the data prefix.
@@ -17,23 +18,23 @@ func Decrypt(data string, passphrase string, pbkdf2Salt []byte, dynamicIter bool
 	}
 
 	if strings.HasPrefix(data, "%=") {
-		log.Printf("      [crypto] dispatch: HKDF (%%=), data_len=%d", len(data))
+		logw.Tracef("[crypto] dispatch: HKDF (%%=), data_len=%d", len(data))
 		return decryptHKDF(data[2:], passphrase, pbkdf2Salt)
 	}
 	if strings.HasPrefix(data, "%$") {
-		log.Printf("      [crypto] dispatch: HKDF-Ephemeral (%%$), data_len=%d", len(data))
+		logw.Tracef("[crypto] dispatch: HKDF-Ephemeral (%%$), data_len=%d", len(data))
 		return decryptHKDFEphemeral(data[2:], passphrase)
 	}
 	if strings.HasPrefix(data, "%~") {
-		log.Printf("      [crypto] dispatch: V3 (%%~), data_len=%d", len(data))
+		logw.Tracef("[crypto] dispatch: V3 (%%~), data_len=%d", len(data))
 		return decryptV3(data, passphrase)
 	}
 	if strings.HasPrefix(data, "%") {
-		log.Printf("      [crypto] dispatch: V1-Hex (%%...), data_len=%d, dynamicIter=%v, prefix=%q", len(data), dynamicIter, prefix)
+		logw.Tracef("[crypto] dispatch: V1-Hex (%%...), data_len=%d, dynamicIter=%v, prefix=%q", len(data), dynamicIter, prefix)
 		return decryptV1Hex(data, passphrase, dynamicIter)
 	}
 	if strings.HasPrefix(data, "[") && strings.HasSuffix(data, "]") {
-		log.Printf("      [crypto] dispatch: V1-JSON, data_len=%d", len(data))
+		logw.Tracef("[crypto] dispatch: V1-JSON, data_len=%d", len(data))
 		return decryptV1JSON(data, passphrase, dynamicIter)
 	}
 	return "", fmt.Errorf("unknown encryption format: prefix=%q", prefix)

@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/couchdb"
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/localdb"
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/vault"
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 )
 
 func main() {
@@ -22,21 +22,29 @@ func main() {
 	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
+	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace (default: info only)")
 	flag.Parse()
+
+	switch *verboseFlag {
+	case "debug":
+		logw.SetLevel(logw.LogWrapDebug)
+	case "trace":
+		logw.SetLevel(logw.LogWrapTrace)
+	}
 
 	passphrase := os.Getenv("LIVESYNC_PASSPHRASE")
 	if passphrase == "" {
-		log.Fatal("LIVESYNC_PASSPHRASE environment variable is required")
+		logw.Fatalf("LIVESYNC_PASSPHRASE environment variable is required")
 	}
 
 	if *urlFlag == "" || *dbFlag == "" || *userFlag == "" || *passFlag == "" {
-		log.Fatal("--url, --db, --user, and --pass flags are required")
+		logw.Fatalf("--url, --db, --user, and --pass flags are required")
 	}
 
 	// Open SQLite store
 	store, err := localdb.Open(*dataFlag)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		logw.Fatalf("open database: %v", err)
 	}
 	defer store.Close()
 
@@ -45,19 +53,19 @@ func main() {
 
 	// Step 1: Replicate
 	if err := replicate(client, store); err != nil {
-		log.Fatalf("replicate: %v", err)
+		logw.Fatalf("replicate: %v", err)
 	}
 
 	// Step 2: Fetch sync parameters
 	pbkdf2Salt, err := fetchSyncParams(client, store)
 	if err != nil {
-		log.Fatalf("sync params: %v", err)
+		logw.Fatalf("sync params: %v", err)
 	}
 
 	// Step 3: Materialize
 	stats, err := vault.Materialize(store, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag, *fullFlag)
 	if err != nil {
-		log.Fatalf("materialize: %v", err)
+		logw.Fatalf("materialize: %v", err)
 	}
 
 	fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",

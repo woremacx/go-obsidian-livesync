@@ -3,8 +3,9 @@ package vault
 import (
 	"encoding/base64"
 	"fmt"
-	"log"
 	"strings"
+
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 )
 
 // Legacy UTF-16 encoding table: maps byte values to char codes.
@@ -48,14 +49,14 @@ func DecodeBinary(data string) ([]byte, error) {
 		return nil, nil
 	}
 	if strings.HasPrefix(data, "%") {
-		log.Printf("      [binary] legacy UTF-16 decode, data_len=%d", len(data))
+		logw.Tracef("[binary] legacy UTF-16 decode, data_len=%d", len(data))
 		return decodeLegacyUTF16(data[1:]), nil
 	}
-	log.Printf("      [binary] base64 decode, data_len=%d, first_40=%q, last_40=%q",
+	logw.Tracef("[binary] base64 decode, data_len=%d, first_40=%q, last_40=%q",
 		len(data), truncBinStr(data, 40), truncBinStrTail(data, 40))
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		log.Printf("      [binary] StdEncoding failed: %v, trying RawStdEncoding", err)
+		logw.Tracef("[binary] StdEncoding failed: %v, trying RawStdEncoding", err)
 		decoded, err = base64.RawStdEncoding.DecodeString(data)
 		if err != nil {
 			return nil, fmt.Errorf("base64 decode binary: %w", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/crypto"
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/localdb"
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/types"
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 )
 
 // Stats tracks materialization results.
@@ -33,7 +33,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		return nil, fmt.Errorf("get all docs: %w", err)
 	}
 
-	log.Printf("[materialize] total docs from SQLite: %d", len(docs))
+	logw.Infof("[materialize] total docs from SQLite: %d", len(docs))
 
 	var vaultFiles map[string]localdb.VaultFileRecord
 	if !fullRebuild {
@@ -41,7 +41,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		if err != nil {
 			return nil, fmt.Errorf("get vault files: %w", err)
 		}
-		log.Printf("[materialize] tracked vault files: %d", len(vaultFiles))
+		logw.Infof("[materialize] tracked vault files: %d", len(vaultFiles))
 	}
 
 	stats := &Stats{}
@@ -49,7 +49,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 	for _, row := range docs {
 		var doc types.EntryDoc
 		if err := json.Unmarshal(row.Doc, &doc); err != nil {
-			log.Printf("[DEBUG] id=%s: JSON unmarshal failed: %v (raw first 200 chars: %s)", row.ID, err, truncStr(string(row.Doc), 200))
+			logw.Debugf("id=%s: JSON unmarshal failed: %v (raw first 200 chars: %s)", row.ID, err, truncStr(string(row.Doc), 200))
 			stats.Errors++
 			continue
 		}
@@ -62,27 +62,27 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 			continue
 		}
 
-		log.Printf("[DEBUG] id=%s type=%s path_len=%d path_prefix=%q children=%d encrypted=%v",
+		logw.Tracef("id=%s type=%s path_len=%d path_prefix=%q children=%d encrypted=%v",
 			row.ID, doc.Type, len(doc.Path), truncStr(doc.Path, 40), len(doc.Children), doc.Encrypted)
 
 		// Resolve path
 		filePath, meta, err := resolvePath(doc, passphrase, pbkdf2Salt, dynamicIter)
 		if err != nil {
-			log.Printf("WARN: skip id=%s type=%s: path resolve failed: %v", row.ID, doc.Type, err)
-			log.Printf("  [DEBUG] path raw (first 100): %q", truncStr(doc.Path, 100))
-			log.Printf("  [DEBUG] path bytes (first 20): %x", []byte(doc.Path)[:min(20, len(doc.Path))])
+			logw.Warnf("skip id=%s type=%s: path resolve failed: %v", row.ID, doc.Type, err)
+			logw.Debugf("  path raw (first 100): %q", truncStr(doc.Path, 100))
+			logw.Debugf("  path bytes (first 20): %x", []byte(doc.Path)[:min(20, len(doc.Path))])
 			stats.Errors++
 			continue
 		}
 		if filePath == "" {
-			log.Printf("[DEBUG] id=%s: resolvePath returned empty, skipping", row.ID)
+			logw.Tracef("id=%s: resolvePath returned empty, skipping", row.ID)
 			stats.Skipped++
 			continue
 		}
 
 		// Override children from encrypted metadata if available
 		if meta != nil && len(meta.Children) > 0 {
-			log.Printf("[DEBUG] id=%s: overriding children from metadata: %d -> %d", row.ID, len(doc.Children), len(meta.Children))
+			logw.Tracef("id=%s: overriding children from metadata: %d -> %d", row.ID, len(doc.Children), len(meta.Children))
 			doc.Children = meta.Children
 		}
 
@@ -94,7 +94,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 			fullPath := filepath.Join(vaultPath, filePath)
 			if _, err := os.Stat(fullPath); err == nil {
 				if err := os.Remove(fullPath); err != nil {
-					log.Printf("WARN: delete %s: %v", filePath, err)
+					logw.Warnf("delete %s: %v", filePath, err)
 					stats.Errors++
 				} else {
 					store.DeleteVaultFile(filePath)
@@ -115,12 +115,12 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		// Reconstruct content
 		content, chunkParts, err := reconstructContent(store, doc, passphrase, pbkdf2Salt, dynamicIter)
 		if err != nil {
-			log.Printf("WARN: skip %s (id=%s): content reconstruction failed: %v", filePath, row.ID, err)
+			logw.Warnf("skip %s (id=%s): content reconstruction failed: %v", filePath, row.ID, err)
 			stats.Errors++
 			continue
 		}
 
-		log.Printf("[DEBUG] id=%s path=%s: content_len=%d isPlainText=%v chunks=%d", row.ID, filePath, len(content), IsPlainText(filePath), len(chunkParts))
+		logw.Tracef("id=%s path=%s: content_len=%d isPlainText=%v chunks=%d", row.ID, filePath, len(content), IsPlainText(filePath), len(chunkParts))
 
 		// Determine if binary and decode
 		var fileData []byte
@@ -130,12 +130,12 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 			// Binary files: each chunk is independently base64-encoded,
 			// so we must decode each chunk separately then concatenate bytes.
 			if len(chunkParts) > 1 {
-				log.Printf("[DEBUG] id=%s path=%s: per-chunk binary decode (%d chunks)", row.ID, filePath, len(chunkParts))
+				logw.Tracef("id=%s path=%s: per-chunk binary decode (%d chunks)", row.ID, filePath, len(chunkParts))
 				var allBytes []byte
 				for ci, part := range chunkParts {
 					decoded, derr := DecodeBinary(part)
 					if derr != nil {
-						log.Printf("WARN: skip %s (id=%s): binary decode chunk[%d] failed: %v", filePath, row.ID, ci, derr)
+						logw.Warnf("skip %s (id=%s): binary decode chunk[%d] failed: %v", filePath, row.ID, ci, derr)
 						err = derr
 						break
 					}
@@ -147,10 +147,10 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 				}
 				fileData = allBytes
 			} else {
-				log.Printf("[DEBUG] id=%s path=%s: single-chunk binary decode", row.ID, filePath)
+				logw.Tracef("id=%s path=%s: single-chunk binary decode", row.ID, filePath)
 				fileData, err = DecodeBinary(content)
 				if err != nil {
-					log.Printf("WARN: skip %s (id=%s): binary decode failed: %v", filePath, row.ID, err)
+					logw.Warnf("skip %s (id=%s): binary decode failed: %v", filePath, row.ID, err)
 					stats.Errors++
 					continue
 				}
@@ -160,7 +160,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		// Write file
 		fullPath := filepath.Join(vaultPath, filePath)
 		if err := writeFile(fullPath, fileData); err != nil {
-			log.Printf("WARN: skip %s: write: %v", filePath, err)
+			logw.Warnf("skip %s: write: %v", filePath, err)
 			stats.Errors++
 			continue
 		}
@@ -183,7 +183,7 @@ func Materialize(store *localdb.Store, vaultPath, passphrase string, pbkdf2Salt 
 		h := sha256.Sum256(fileData)
 		contentHash := hex.EncodeToString(h[:])
 		if err := store.UpsertVaultFile(filePath, row.ID, row.Rev, contentHash, fileMtime, int64(len(fileData))); err != nil {
-			log.Printf("WARN: vault_files upsert %s: %v", filePath, err)
+			logw.Warnf("vault_files upsert %s: %v", filePath, err)
 		}
 
 		stats.Written++
@@ -199,17 +199,17 @@ func resolvePath(doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynam
 		return "", nil, nil
 	}
 
-	log.Printf("  [resolvePath] id=%s checking path: isEncryptedMeta=%v isObfV2=%v isObfV1=%v",
+	logw.Tracef("[resolvePath] id=%s checking path: isEncryptedMeta=%v isObfV2=%v isObfV1=%v",
 		doc.ID, crypto.IsEncryptedMeta(path), crypto.IsPathObfuscatedV2(path), crypto.IsPathObfuscatedV1(path))
 
 	if crypto.IsEncryptedMeta(path) {
-		log.Printf("  [resolvePath] id=%s: /\\: encrypted metadata detected, encrypted_part_prefix=%q",
+		logw.Tracef("[resolvePath] id=%s: /\\: encrypted metadata detected, encrypted_part_prefix=%q",
 			doc.ID, truncStr(path[3:], 30))
 		meta, err := crypto.DecryptPathMeta(path, passphrase, pbkdf2Salt)
 		if err != nil {
 			return "", nil, fmt.Errorf("decrypt /\\: metadata: %w", err)
 		}
-		log.Printf("  [resolvePath] id=%s: decrypted metadata: path=%q children=%d", doc.ID, meta.Path, len(meta.Children))
+		logw.Tracef("[resolvePath] id=%s: decrypted metadata: path=%q children=%d", doc.ID, meta.Path, len(meta.Children))
 		return meta.Path, meta, nil
 	}
 
@@ -218,17 +218,17 @@ func resolvePath(doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynam
 	}
 
 	if crypto.IsPathObfuscatedV1(path) {
-		log.Printf("  [resolvePath] id=%s: V1 obfuscated path, len=%d, ivHex=%s, saltHex=%s",
+		logw.Tracef("[resolvePath] id=%s: V1 obfuscated path, len=%d, ivHex=%s, saltHex=%s",
 			doc.ID, len(path), truncStr(path[1:33], 32), truncStr(path[33:65], 32))
 		decrypted, err := crypto.DecryptObfuscatedPathV1(path, passphrase, dynamicIter)
 		if err != nil {
 			return "", nil, fmt.Errorf("V1 path decrypt (len=%d, prefix=%q): %w", len(path), truncStr(path, 40), err)
 		}
-		log.Printf("  [resolvePath] id=%s: V1 path decrypted to: %q", doc.ID, decrypted)
+		logw.Tracef("[resolvePath] id=%s: V1 path decrypted to: %q", doc.ID, decrypted)
 		return decrypted, nil, nil
 	}
 
-	log.Printf("  [resolvePath] id=%s: plain path=%q", doc.ID, truncStr(path, 60))
+	logw.Tracef("[resolvePath] id=%s: plain path=%q", doc.ID, truncStr(path, 60))
 	return path, nil, nil
 }
 
@@ -236,7 +236,7 @@ func resolvePath(doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynam
 // Returns the joined content string and the individual chunk parts (for per-chunk binary decode).
 func reconstructContent(store *localdb.Store, doc types.EntryDoc, passphrase string, pbkdf2Salt []byte, dynamicIter bool) (string, []string, error) {
 	if doc.Type == types.TypeNotes {
-		log.Printf("  [content] id=%s: notes type, extracting data field", doc.ID)
+		logw.Tracef("[content] id=%s: notes type, extracting data field", doc.ID)
 		s, err := extractDataString(doc.Data)
 		return s, nil, err
 	}
@@ -244,18 +244,18 @@ func reconstructContent(store *localdb.Store, doc types.EntryDoc, passphrase str
 	// plain/newnote: children array contains chunk IDs
 	children := doc.Children
 	if len(children) == 0 {
-		log.Printf("  [content] id=%s: no children, returning empty", doc.ID)
+		logw.Tracef("[content] id=%s: no children, returning empty", doc.ID)
 		return "", nil, nil
 	}
 
-	log.Printf("  [content] id=%s: %d children to fetch", doc.ID, len(children))
+	logw.Tracef("[content] id=%s: %d children to fetch", doc.ID, len(children))
 
 	// Try to get eden for fallback
 	var eden map[string]types.EdenEntry
 	if len(doc.Eden) > 0 {
 		eden = decryptEden(doc.Eden, passphrase, pbkdf2Salt, dynamicIter)
 		if eden != nil {
-			log.Printf("  [content] id=%s: eden available with %d entries", doc.ID, len(eden))
+			logw.Tracef("[content] id=%s: eden available with %d entries", doc.ID, len(eden))
 		}
 	}
 
@@ -266,12 +266,12 @@ func reconstructContent(store *localdb.Store, doc types.EntryDoc, passphrase str
 			return "", nil, fmt.Errorf("chunk[%d] id=%s: %w", i, chunkID, err)
 		}
 		if i == 0 {
-			log.Printf("  [content] id=%s: chunk[0]=%s data_len=%d data_prefix=%q", doc.ID, chunkID, len(data), truncStr(data, 30))
+			logw.Tracef("[content] id=%s: chunk[0]=%s data_len=%d data_prefix=%q", doc.ID, chunkID, len(data), truncStr(data, 30))
 		}
 		parts = append(parts, data)
 	}
 	joined := strings.Join(parts, "")
-	log.Printf("  [content] id=%s: joined %d chunks, total_len=%d", doc.ID, len(parts), len(joined))
+	logw.Tracef("[content] id=%s: joined %d chunks, total_len=%d", doc.ID, len(parts), len(joined))
 	return joined, parts, nil
 }
 
@@ -311,7 +311,7 @@ func getChunkData(store *localdb.Store, chunkID string, eden map[string]types.Ed
 	// Fallback to eden
 	if eden != nil {
 		if entry, ok := eden[chunkID]; ok {
-			log.Printf("    [chunk] %s: found in eden (data_len=%d)", chunkID, len(entry.Data))
+			logw.Tracef("[chunk] %s: found in eden (data_len=%d)", chunkID, len(entry.Data))
 			return entry.Data, nil
 		}
 	}
@@ -333,7 +333,7 @@ func decryptChunkDoc(raw json.RawMessage, chunkID string, passphrase string, pbk
 		return chunk.Data, nil
 	}
 
-	log.Printf("    [chunk] %s: encrypted, data_prefix=%q", chunkID, truncStr(chunk.Data, 20))
+	logw.Tracef("[chunk] %s: encrypted, data_prefix=%q", chunkID, truncStr(chunk.Data, 20))
 	decrypted, err := crypto.Decrypt(chunk.Data, passphrase, pbkdf2Salt, dynamicIter)
 	if err != nil {
 		return "", fmt.Errorf("decrypt (prefix=%q): %w", truncStr(chunk.Data, 10), err)
@@ -345,26 +345,26 @@ func decryptChunkDoc(raw json.RawMessage, chunkID string, passphrase string, pbk
 func decryptEden(edenRaw json.RawMessage, passphrase string, pbkdf2Salt []byte, dynamicIter bool) map[string]types.EdenEntry {
 	var edenMap map[string]json.RawMessage
 	if err := json.Unmarshal(edenRaw, &edenMap); err != nil {
-		log.Printf("    [eden] unmarshal failed: %v", err)
+		logw.Debugf("[eden] unmarshal failed: %v", err)
 		return nil
 	}
 
-	log.Printf("    [eden] keys: %v", edenKeys(edenMap))
+	logw.Tracef("[eden] keys: %v", edenKeys(edenMap))
 
 	// Check for encrypted eden
 	if encData, ok := edenMap["h:++encrypted-hkdf"]; ok {
 		var entry types.EdenEntry
 		if err := json.Unmarshal(encData, &entry); err == nil {
-			log.Printf("    [eden] decrypting h:++encrypted-hkdf, data_prefix=%q", truncStr(entry.Data, 20))
+			logw.Tracef("[eden] decrypting h:++encrypted-hkdf, data_prefix=%q", truncStr(entry.Data, 20))
 			decrypted, err := crypto.Decrypt(entry.Data, passphrase, pbkdf2Salt, dynamicIter)
 			if err == nil {
 				var result map[string]types.EdenEntry
 				if err := json.Unmarshal([]byte(decrypted), &result); err == nil {
 					return result
 				}
-				log.Printf("    [eden] h:++encrypted-hkdf JSON parse failed: %v", err)
+				logw.Debugf("[eden] h:++encrypted-hkdf JSON parse failed: %v", err)
 			} else {
-				log.Printf("    [eden] h:++encrypted-hkdf decrypt failed: %v", err)
+				logw.Debugf("[eden] h:++encrypted-hkdf decrypt failed: %v", err)
 			}
 		}
 	}
@@ -372,16 +372,16 @@ func decryptEden(edenRaw json.RawMessage, passphrase string, pbkdf2Salt []byte, 
 	if encData, ok := edenMap["h:++encrypted"]; ok {
 		var entry types.EdenEntry
 		if err := json.Unmarshal(encData, &entry); err == nil {
-			log.Printf("    [eden] decrypting h:++encrypted, data_prefix=%q", truncStr(entry.Data, 20))
+			logw.Tracef("[eden] decrypting h:++encrypted, data_prefix=%q", truncStr(entry.Data, 20))
 			decrypted, err := crypto.Decrypt(entry.Data, passphrase, pbkdf2Salt, dynamicIter)
 			if err == nil {
 				var result map[string]types.EdenEntry
 				if err := json.Unmarshal([]byte(decrypted), &result); err == nil {
 					return result
 				}
-				log.Printf("    [eden] h:++encrypted JSON parse failed: %v", err)
+				logw.Debugf("[eden] h:++encrypted JSON parse failed: %v", err)
 			} else {
-				log.Printf("    [eden] h:++encrypted decrypt failed: %v", err)
+				logw.Debugf("[eden] h:++encrypted decrypt failed: %v", err)
 			}
 		}
 	}
@@ -424,4 +424,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"unicode/utf16"
 
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -40,7 +40,7 @@ func v1Iterations(passphrase string, dynamic bool) int {
 func deriveV1Key(passphrase string, salt []byte, dynamic bool) []byte {
 	h := sha256.Sum256([]byte(passphrase))
 	iter := v1Iterations(passphrase, dynamic)
-	log.Printf("      [v1key] iterations=%d, salt_hex=%x, digest_hex=%x", iter, salt, h[:8])
+	logw.Tracef("[v1key] iterations=%d, salt_hex=%x, digest_hex=%x", iter, salt, h[:8])
 	return pbkdf2.Key(h[:], salt, iter, 32, sha256.New)
 }
 
@@ -53,7 +53,7 @@ func decryptV1Hex(data string, passphrase string, dynamic bool) (string, error) 
 	saltHex := data[33:65]
 	cipherB64 := data[65:]
 
-	log.Printf("      [v1hex] ivHex=%s saltHex=%s cipher_b64_len=%d", ivHex, saltHex, len(cipherB64))
+	logw.Tracef("[v1hex] ivHex=%s saltHex=%s cipher_b64_len=%d", ivHex, saltHex, len(cipherB64))
 
 	iv, err := hex.DecodeString(ivHex)
 	if err != nil {
@@ -68,7 +68,7 @@ func decryptV1Hex(data string, passphrase string, dynamic bool) (string, error) 
 		return "", fmt.Errorf("V1-Hex ciphertext decode: %w", err)
 	}
 
-	log.Printf("      [v1hex] iv_len=%d salt_len=%d ciphertext_len=%d", len(iv), len(salt), len(ciphertext))
+	logw.Tracef("[v1hex] iv_len=%d salt_len=%d ciphertext_len=%d", len(iv), len(salt), len(ciphertext))
 
 	key := deriveV1Key(passphrase, salt, dynamic)
 	plaintext, err := decryptAESGCM(key, iv, ciphertext)
@@ -98,7 +98,7 @@ func decryptV1JSON(data string, passphrase string, dynamic bool) (string, error)
 	ivHex := stripQuotes(parts[1])
 	saltHex := stripQuotes(parts[2])
 
-	log.Printf("      [v1json] ivHex=%s saltHex=%s enc_len=%d", ivHex, saltHex, len(encData))
+	logw.Tracef("[v1json] ivHex=%s saltHex=%s enc_len=%d", ivHex, saltHex, len(encData))
 
 	iv, err := hex.DecodeString(ivHex)
 	if err != nil {

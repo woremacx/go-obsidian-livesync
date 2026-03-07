@@ -3,10 +3,10 @@ package crypto
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/types"
+	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
 )
 
 const encryptedMetaPrefix = "/\\:"
@@ -32,12 +32,12 @@ func DecryptPathMeta(path string, passphrase string, pbkdf2Salt []byte) (*types.
 		return nil, fmt.Errorf("not encrypted metadata: %s", path[:min(len(path), 20)])
 	}
 	encrypted := path[len(encryptedMetaPrefix):]
-	log.Printf("      [pathMeta] encrypted_part prefix=%q len=%d", truncPathStr(encrypted, 30), len(encrypted))
+	logw.Tracef("[pathMeta] encrypted_part prefix=%q len=%d", truncPathStr(encrypted, 30), len(encrypted))
 	plainJSON, err := Decrypt(encrypted, passphrase, pbkdf2Salt, false)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt path metadata: %w", err)
 	}
-	log.Printf("      [pathMeta] decrypted JSON=%q", truncPathStr(plainJSON, 200))
+	logw.Tracef("[pathMeta] decrypted JSON=%q", truncPathStr(plainJSON, 200))
 	var meta types.PathMetadata
 	if err := json.Unmarshal([]byte(plainJSON), &meta); err != nil {
 		return nil, fmt.Errorf("parse path metadata JSON: %w (json=%q)", err, truncPathStr(plainJSON, 100))
@@ -47,7 +47,7 @@ func DecryptPathMeta(path string, passphrase string, pbkdf2Salt []byte) (*types.
 
 // DecryptObfuscatedPathV1 decrypts a V1 obfuscated path.
 func DecryptObfuscatedPathV1(path string, passphrase string, dynamic bool) (string, error) {
-	log.Printf("      [pathV1] attempting V1 decrypt, path_len=%d", len(path))
+	logw.Tracef("[pathV1] attempting V1 decrypt, path_len=%d", len(path))
 	return decryptV1Hex(path, passphrase, dynamic)
 }
 
