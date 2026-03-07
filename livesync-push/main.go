@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/vrtmrz/obsidian-livesync/cmd/internal/couchdb"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/hash"
 	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
 	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/vault"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/push"
 )
 
 func main() {
@@ -19,11 +20,11 @@ func main() {
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
 	dbFlag := flag.String("db", "", "CouchDB database name")
-	vaultFlag := flag.String("vault", "./vault", "Output vault directory")
+	vaultFlag := flag.String("vault", "./vault", "Vault directory to push")
 	dataFlag := flag.String("data", ".livesync.db", "SQLite database path")
-	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
-	fullFlag := flag.Bool("full", false, "Full rebuild: skip incremental change detection, rewrite all files")
-	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace (default: info only)")
+	forceFlag := flag.Bool("force", false, "Force content hash comparison for all files")
+	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
+	dryRunFlag := flag.Bool("dry-run", false, "Detect changes without pushing")
 	flag.Parse()
 
 	switch *verboseFlag {
@@ -52,84 +53,80 @@ func main() {
 	// Create CouchDB client
 	client := couchdb.NewClient(*urlFlag, *dbFlag, *userFlag, *passFlag)
 
-	// Step 1: Record pre-replication seq, then replicate
-	preSeq, _ := store.GetLastSeq()
-	changedIDs, err := replicate(client, store)
-	if err != nil {
-		logw.Fatalf("replicate: %v", err)
-	}
-	postSeq, _ := store.GetLastSeq()
-
-	// Step 2: Fetch sync parameters
+	// Fetch sync parameters (pbkdf2 salt)
 	pbkdf2Salt, err := fetchSyncParams(client, store)
 	if err != nil {
 		logw.Fatalf("sync params: %v", err)
 	}
 
-	// Step 3: Determine which docs to materialize
-	materializedSeq, _ := store.GetMeta("last_materialized_seq")
-	logw.Debugf("seq check: preSeq=%s postSeq=%s materializedSeq=%s changedIDs=%d",
-		truncateSeq(preSeq), truncateSeq(postSeq), truncateSeq(materializedSeq), len(changedIDs))
-
-	var docs []localdb.DocRow
-	t0 := time.Now()
-	switch {
-	case materializedSeq == postSeq:
-		// Already fully materialized
-		fmt.Println("Nothing to materialize")
-		return
-	case materializedSeq == preSeq && len(changedIDs) > 0:
-		// Previous materialize completed, only process this run's changes
-		docs, err = store.GetDocsByIDs(changedIDs)
-		if err != nil {
-			logw.Fatalf("get docs by IDs: %v", err)
-		}
-		logw.Infof("Incremental materialization: %d changed docs", len(docs))
-	case *fullFlag:
-		// Forced full rebuild
-		docs, err = store.GetAllDocs()
-		if err != nil {
-			logw.Fatalf("get all docs: %v", err)
-		}
-		logw.Infof("Full rebuild: %d docs", len(docs))
-	default:
-		// Initial run, crash recovery, etc: only load docs that differ from vault_files
-		docs, err = store.GetChangedDocs()
-		if err != nil {
-			logw.Fatalf("get changed docs: %v", err)
-		}
-		logw.Infof("Materialization (changed only): %d docs", len(docs))
-	}
-
-	logw.Debugf("doc selection took %v", time.Since(t0))
-
-	// Step 4: Materialize
-	stats, err := vault.Materialize(store, docs, *vaultFlag, passphrase, pbkdf2Salt, *dynamicIterFlag)
+	// Pull first for safety: replicate latest state from CouchDB
+	logw.Infof("Pulling latest changes from CouchDB...")
+	_, err = replicate(client, store)
 	if err != nil {
-		logw.Fatalf("materialize: %v", err)
+		logw.Fatalf("replicate: %v", err)
 	}
 
-	// Step 5: Record successful materialization seq
-	if err := store.SetMeta("last_materialized_seq", postSeq); err != nil {
-		logw.Warnf("save last_materialized_seq: %v", err)
+	// Detect changes
+	t0 := time.Now()
+	changes, err := push.DetectChanges(store, *vaultFlag, *forceFlag)
+	if err != nil {
+		logw.Fatalf("detect changes: %v", err)
+	}
+	logw.Infof("Detected %d changes in %v", len(changes), time.Since(t0))
+
+	if len(changes) == 0 {
+		fmt.Println("Nothing to push")
+		return
 	}
 
-	fmt.Printf("Done: %d written, %d unchanged, %d deleted, %d skipped, %d errors\n",
-		stats.Written, stats.Unchanged, stats.Deleted, stats.Skipped, stats.Errors)
+	// Report changes
+	creates, updates, deletes := 0, 0, 0
+	for _, c := range changes {
+		switch c.Action {
+		case "create":
+			creates++
+		case "update":
+			updates++
+		case "delete":
+			deletes++
+		}
+		logw.Debugf("  %s: %s", c.Action, c.Path)
+	}
+	fmt.Printf("Changes: %d new, %d modified, %d deleted\n", creates, updates, deletes)
+
+	if *dryRunFlag {
+		fmt.Println("Dry run, not pushing")
+		return
+	}
+
+	// Compute hashed passphrase for chunk IDs
+	hashedPassphrase := hash.ComputeHashedPassphrase(passphrase)
+
+	// Push each change
+	pushed, errors := 0, 0
+	for _, c := range changes {
+		if err := push.PushFile(client, store, c, *vaultFlag, passphrase, pbkdf2Salt, hashedPassphrase); err != nil {
+			logw.Warnf("push %s: %v", c.Path, err)
+			errors++
+		} else {
+			pushed++
+		}
+	}
+
+	fmt.Printf("Done: %d pushed, %d errors\n", pushed, errors)
 }
 
-func replicate(client *couchdb.Client, store *localdb.Store) ([]string, error) {
+func replicate(client *couchdb.Client, store *localdb.Store) (int, error) {
 	since, err := store.GetLastSeq()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	totalDocs := 0
-	var changedIDs []string
 	for {
 		resp, err := client.GetChanges(since, 500)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 
 		if len(resp.Results) == 0 {
@@ -138,11 +135,11 @@ func replicate(client *couchdb.Client, store *localdb.Store) ([]string, error) {
 
 		tx, err := store.BeginTx()
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		if err := tx.Prepare(); err != nil {
 			tx.Rollback()
-			return nil, err
+			return 0, err
 		}
 
 		for _, result := range resp.Results {
@@ -152,40 +149,35 @@ func replicate(client *couchdb.Client, store *localdb.Store) ([]string, error) {
 			}
 			if err := tx.UpsertDoc(result.ID, rev, json.RawMessage(result.Doc), result.Deleted); err != nil {
 				tx.Rollback()
-				return nil, fmt.Errorf("upsert %s: %w", result.ID, err)
+				return 0, fmt.Errorf("upsert %s: %w", result.ID, err)
 			}
-			changedIDs = append(changedIDs, result.ID)
 		}
 
 		if err := tx.Commit(); err != nil {
-			return nil, err
+			return 0, err
 		}
 
 		totalDocs += len(resp.Results)
 		since = string(resp.LastSeq)
 
 		if err := store.SetLastSeq(since); err != nil {
-			return nil, err
+			return 0, err
 		}
 
-		fmt.Printf("Replicated %d docs (seq: %s)\n", totalDocs, truncateSeq(since))
+		logw.Debugf("Replicated %d docs (seq: %s)", totalDocs, truncateSeq(since))
 	}
 
 	if totalDocs > 0 {
-		fmt.Printf("Replication complete: %d docs\n", totalDocs)
-	} else {
-		fmt.Println("Already up to date")
+		logw.Infof("Replicated %d docs from CouchDB", totalDocs)
 	}
-	return changedIDs, nil
+	return totalDocs, nil
 }
 
 func fetchSyncParams(client *couchdb.Client, store *localdb.Store) ([]byte, error) {
-	// Try cached salt first
 	cached, _ := store.GetMeta("pbkdf2salt")
 	if cached != "" {
 		salt, err := base64.StdEncoding.DecodeString(cached)
 		if err == nil && len(salt) > 0 {
-			// Still fetch from server to update if needed
 			params, err := client.GetSyncParams()
 			if err == nil && params.PBKDF2Salt != "" && params.PBKDF2Salt != cached {
 				store.SetMeta("pbkdf2salt", params.PBKDF2Salt)

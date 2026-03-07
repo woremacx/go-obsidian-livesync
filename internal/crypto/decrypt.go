@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
 )
 
 // Decrypt dispatches to the appropriate decryption function based on the data prefix.

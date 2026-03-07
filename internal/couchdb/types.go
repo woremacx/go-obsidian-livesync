@@ -44,6 +44,21 @@ type ChangeRev struct {
 	Rev string `json:"rev"`
 }
 
+// PutResponse is the JSON response from a PUT document request.
+type PutResponse struct {
+	OK  bool   `json:"ok"`
+	ID  string `json:"id"`
+	Rev string `json:"rev"`
+}
+
+// BulkDocResult is a single result from a _bulk_docs request.
+type BulkDocResult struct {
+	OK    bool   `json:"ok"`
+	ID    string `json:"id"`
+	Rev   string `json:"rev"`
+	Error string `json:"error,omitempty"`
+}
+
 // SyncParams is the _local/obsidian_livesync_sync_parameters document.
 type SyncParams struct {
 	ID         string `json:"_id"`

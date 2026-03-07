@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -102,6 +103,50 @@ func decryptHKDF(b64data string, passphrase string, pbkdf2Salt []byte) (string, 
 		return "", err
 	}
 	return string(plaintext), nil
+}
+
+// encryptAESGCM encrypts data using AES-256-GCM with the given key and IV.
+func encryptAESGCM(key, iv, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nil, iv, plaintext, nil), nil
+}
+
+// EncryptHKDF encrypts plaintext using HKDF key derivation + AES-256-GCM.
+// Returns "%=" + base64(IV(12) | hkdfSalt(32) | ciphertext+tag).
+func EncryptHKDF(plaintext string, passphrase string, pbkdf2Salt []byte) (string, error) {
+	iv := make([]byte, ivLength)
+	if _, err := rand.Read(iv); err != nil {
+		return "", fmt.Errorf("generate IV: %w", err)
+	}
+	salt := make([]byte, hkdfSaltLength)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("generate HKDF salt: %w", err)
+	}
+
+	masterKey := deriveMasterKeyHKDF(passphrase, pbkdf2Salt)
+	chunkKey, err := deriveChunkKey(masterKey, salt)
+	if err != nil {
+		return "", err
+	}
+	ciphertext, err := encryptAESGCM(chunkKey, iv, []byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+
+	// Pack: IV | hkdfSalt | ciphertext+tag
+	raw := make([]byte, 0, ivLength+hkdfSaltLength+len(ciphertext))
+	raw = append(raw, iv...)
+	raw = append(raw, salt...)
+	raw = append(raw, ciphertext...)
+
+	return "%=" + base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // decryptHKDFEphemeral decrypts %$ ephemeral-salt data.

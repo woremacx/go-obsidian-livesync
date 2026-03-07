@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/internal/types"
-	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/types"
 )
 
 const encryptedMetaPrefix = "/\\:"
@@ -43,6 +43,19 @@ func DecryptPathMeta(path string, passphrase string, pbkdf2Salt []byte) (*types.
 		return nil, fmt.Errorf("parse path metadata JSON: %w (json=%q)", err, truncPathStr(plainJSON, 100))
 	}
 	return &meta, nil
+}
+
+// EncryptPathMeta encrypts PathMetadata as JSON, returns "/\:" + encrypted string.
+func EncryptPathMeta(meta *types.PathMetadata, passphrase string, pbkdf2Salt []byte) (string, error) {
+	jsonBytes, err := json.Marshal(meta)
+	if err != nil {
+		return "", fmt.Errorf("marshal path metadata: %w", err)
+	}
+	encrypted, err := EncryptHKDF(string(jsonBytes), passphrase, pbkdf2Salt)
+	if err != nil {
+		return "", fmt.Errorf("encrypt path metadata: %w", err)
+	}
+	return encryptedMetaPrefix + encrypted, nil
 }
 
 // DecryptObfuscatedPathV1 decrypts a V1 obfuscated path.

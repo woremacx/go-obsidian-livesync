@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/livesync-pull/logw"
+	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
 )
 
 // Legacy UTF-16 encoding table: maps byte values to char codes.
