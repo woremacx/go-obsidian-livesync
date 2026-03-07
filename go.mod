@@ -1,4 +1,4 @@
-module github.com/vrtmrz/obsidian-livesync/cmd
+module github.com/woremacx/go-obsidian-livesync
 
 go 1.22.0
 

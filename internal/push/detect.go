@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
+	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/logw"
 )
 
 type ChangedFile struct {

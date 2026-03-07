@@ -8,10 +8,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/couchdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/vault"
+	"github.com/woremacx/go-obsidian-livesync/internal/couchdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/logw"
+	"github.com/woremacx/go-obsidian-livesync/internal/vault"
 )
 
 func main() {

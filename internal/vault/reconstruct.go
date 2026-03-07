@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/crypto"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/types"
+	"github.com/woremacx/go-obsidian-livesync/internal/crypto"
+	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/logw"
+	"github.com/woremacx/go-obsidian-livesync/internal/types"
 )
 
 // Stats tracks materialization results.

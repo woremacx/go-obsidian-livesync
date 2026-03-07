@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/types"
+	"github.com/woremacx/go-obsidian-livesync/internal/types"
 )
 
 func TestEncryptDecryptPathMeta(t *testing.T) {

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/hash"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/push"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/vault"
+	"github.com/woremacx/go-obsidian-livesync/internal/hash"
+	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/push"
+	"github.com/woremacx/go-obsidian-livesync/internal/vault"
 )
 
 const (

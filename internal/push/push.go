@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/couchdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/crypto"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/hash"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/localdb"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/splitter"
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/types"
+	"github.com/woremacx/go-obsidian-livesync/internal/couchdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/crypto"
+	"github.com/woremacx/go-obsidian-livesync/internal/hash"
+	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
+	"github.com/woremacx/go-obsidian-livesync/internal/logw"
+	"github.com/woremacx/go-obsidian-livesync/internal/splitter"
+	"github.com/woremacx/go-obsidian-livesync/internal/types"
 )
 
 // PushFile pushes a single file change to CouchDB.

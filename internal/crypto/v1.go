@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/vrtmrz/obsidian-livesync/cmd/internal/logw"
+	"github.com/woremacx/go-obsidian-livesync/internal/logw"
 	"golang.org/x/crypto/pbkdf2"
 )
 
