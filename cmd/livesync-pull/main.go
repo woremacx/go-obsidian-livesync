@@ -13,9 +13,15 @@ import (
 	"github.com/woremacx/go-obsidian-livesync/internal/localdb"
 	"github.com/woremacx/go-obsidian-livesync/internal/logw"
 	"github.com/woremacx/go-obsidian-livesync/internal/vault"
+	"github.com/woremacx/go-obsidian-livesync/internal/version"
 )
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "livesync-pull %s - Pull Obsidian vault from CouchDB\n\nUsage:\n", version.Version)
+		flag.PrintDefaults()
+	}
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	urlFlag := flag.String("url", "", "CouchDB URL (e.g. https://couchdb.example.com)")
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
@@ -27,6 +33,11 @@ func main() {
 	watchFlag := flag.Bool("watch", false, "Watch for changes continuously using CouchDB longpoll")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace (default: info only)")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version.Version)
+		return
+	}
 
 	switch *verboseFlag {
 	case "debug":

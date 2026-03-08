@@ -22,9 +22,15 @@ import (
 	"github.com/woremacx/go-obsidian-livesync/internal/logw"
 	"github.com/woremacx/go-obsidian-livesync/internal/push"
 	"github.com/woremacx/go-obsidian-livesync/internal/vault"
+	"github.com/woremacx/go-obsidian-livesync/internal/version"
 )
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "livesync-sync %s - Bidirectional sync for Obsidian vault\n\nUsage:\n", version.Version)
+		flag.PrintDefaults()
+	}
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	urlFlag := flag.String("url", "", "CouchDB URL (e.g. https://couchdb.example.com)")
 	userFlag := flag.String("user", "", "CouchDB username")
 	passFlag := flag.String("pass", "", "CouchDB password")
@@ -34,6 +40,11 @@ func main() {
 	dynamicIterFlag := flag.Bool("dynamic-iter", false, "Use dynamic iteration count for V1 encryption")
 	verboseFlag := flag.String("v", "", "Log verbosity: debug or trace")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version.Version)
+		return
+	}
 
 	switch *verboseFlag {
 	case "debug":
