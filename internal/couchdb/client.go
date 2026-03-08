@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Client is a CouchDB HTTP client with Basic Auth.
@@ -183,9 +184,16 @@ func (c *Client) GetChanges(since string, limit int) (*ChangesResponse, error) {
 	return &resp, nil
 }
 
+// ErrLongPollInterrupted is returned when the longpoll connection is closed
+// by the server or a proxy (e.g. timeout, keepalive expiry). This is normal
+// and callers should retry immediately without treating it as an error.
+var ErrLongPollInterrupted = fmt.Errorf("longpoll connection interrupted")
+
 // GetChangesLongPoll uses feed=longpoll to wait for changes from CouchDB.
-// It blocks until at least one change is available or the heartbeat interval passes.
+// It blocks until at least one change is available or the timeout/heartbeat expires.
 // heartbeatMs is the heartbeat interval in milliseconds (e.g. 30000).
+// The HTTP client timeout is set to 2× heartbeat to allow for network delays
+// while still recovering from truly stuck connections.
 func (c *Client) GetChangesLongPoll(since string, heartbeatMs int) (*ChangesResponse, error) {
 	params := url.Values{}
 	params.Set("since", since)
@@ -200,23 +208,31 @@ func (c *Client) GetChangesLongPoll(since string, heartbeatMs int) (*ChangesResp
 	}
 	req.SetBasicAuth(c.user, c.password)
 
-	resp, err := c.http.Do(req)
+	// Use a dedicated client with timeout to detect stuck connections.
+	// Timeout = 2× heartbeat gives the server enough room for heartbeat delivery
+	// while ensuring we don't hang forever if the connection is silently dropped.
+	httpClient := &http.Client{
+		Timeout: time.Duration(heartbeatMs*2) * time.Millisecond,
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("longpoll changes: %w", err)
+		// Client timeout or connection reset — normal for longpoll
+		return nil, ErrLongPollInterrupted
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read longpoll response: %w", err)
-	}
 	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("longpoll _changes returned %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Stream-decode: json.Decoder reads incrementally, so CouchDB heartbeat
+	// newlines keep the connection alive during idle periods.
 	var result ChangesResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse longpoll changes: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// EOF or read error during decode — connection dropped by server/proxy
+		return nil, ErrLongPollInterrupted
 	}
 	return &result, nil
 }

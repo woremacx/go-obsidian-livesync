@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -136,6 +137,10 @@ func main() {
 		since, _ := store.GetLastSeq()
 		resp, err := client.GetChangesLongPoll(since, 30000)
 		if err != nil {
+			if errors.Is(err, couchdb.ErrLongPollInterrupted) {
+				logw.Debugf("longpoll connection closed, reconnecting")
+				continue
+			}
 			logw.Warnf("longpoll error: %v (retrying in 5s)", err)
 			time.Sleep(5 * time.Second)
 			continue

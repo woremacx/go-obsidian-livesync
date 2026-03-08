@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"errors"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/woremacx/go-obsidian-livesync/internal/couchdb"
 	"github.com/woremacx/go-obsidian-livesync/internal/hash"
@@ -120,6 +122,10 @@ func pullLoop(client *couchdb.Client, store *localdb.Store,
 		since, _ := store.GetLastSeq()
 		resp, err := client.GetChangesLongPoll(since, 30000)
 		if err != nil {
+			if errors.Is(err, couchdb.ErrLongPollInterrupted) {
+				logw.Debugf("[pull] longpoll connection closed, reconnecting")
+				continue
+			}
 			logw.Warnf("[pull] longpoll error: %v (retrying in 5s)", err)
 			time.Sleep(5 * time.Second)
 			continue
